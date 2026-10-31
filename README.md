@@ -139,10 +139,4 @@ Stop the project:
 docker compose --profile kubernetes down
 ```
 
-## Security and operational notes
-
-- Never commit `.env`, kubeconfig files, API keys, or email app passwords. Commit only `.env.example` with placeholder values.
-- `docker-mcp` mounts the Docker socket and can control host containers. Run it only in a trusted local environment.
-- Container start, stop, restart, command execution, and infrastructure actions can be disruptive. Review requests before using them on important systems.
-- OpenStack and tracing features require their corresponding external data sources. The tracing service currently expects a reachable Jaeger API.
 
