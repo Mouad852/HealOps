@@ -20,11 +20,11 @@ prometheus = PrometheusClient()
 
 
 # ===== Email Setup =====
-EMAIL_HOST = "smtp.gmail.com"
-EMAIL_PORT = 587
-EMAIL_USER = "abdellaalimohamad4321@gmail.com"         # your Gmail address
-EMAIL_PASS = "grhy xrpf npbq adkq"       # the 16-character App Password
-ALERT_EMAIL_TO = "naitpublicstore2001@gmail.com"  # where to send test email
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_APP_PASSWORD")
+ALERT_EMAIL_TO = os.getenv("ALERT_EMAIL_TO", EMAIL_USER)
 
 
 # ===== Anomaly Detection Config =====
@@ -118,7 +118,7 @@ def detect_anomalies():
 
     for container in containers:
         metrics = prometheus.get_container_metrics(container)
-        
+
         # Safely convert metrics to float
         def to_float_safe(val, default=0.0):
             try:

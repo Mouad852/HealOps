@@ -6,8 +6,10 @@ import subprocess
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 
-PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://172.17.99.132:30090/query")
-
+PROMETHEUS_BASE_URL = os.getenv(
+    "PROMETHEUS_BASE_URL",
+    "http://prometheus:9090"
+).rstrip("/")
 class OpenstackManager:
     """
     Minimal manager for OpenStack MCP:
@@ -68,7 +70,11 @@ class OpenstackManager:
 
     # ------------ Prometheus metric helpers ------------
     def _prometheus_query(self, query: str, timeout: int = 10):
-        r = requests.get(PROMETHEUS_URL, params={"query": query}, timeout=timeout)
+        r = requests.get(
+            f"{PROMETHEUS_BASE_URL}/api/v1/query",
+            params={"query": query},
+            timeout=timeout
+        )
         r.raise_for_status()
         return r.json()
 

@@ -1,8 +1,12 @@
 import requests
+import os
 
 class PrometheusClient:
-    def __init__(self, base_url="http://172.17.99.132:30090/query"):
-        self.base_url = base_url
+    def __init__(self, base_url=None):
+        self.base_url = (
+            base_url
+            or os.getenv("PROMETHEUS_BASE_URL", "http://prometheus:9090")
+        ).rstrip("/")
 
     def _query(self, query: str):
         url = f"{self.base_url}/api/v1/query"
@@ -36,7 +40,7 @@ class PrometheusClient:
         containers = [r["metric"].get("name", "unknown") for r in result]
         return {"containers": list(set(containers))}
 
-    
+
     def query_range(self, query: str, start, end, step: str = "1m"):
         """Range query (historical time series)."""
         url = f"{self.base_url}/api/v1/query_range"

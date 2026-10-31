@@ -1,5 +1,7 @@
 fastapi
 uvicorn
 httpx
+requests
 pydantic
 numpy
+mcp>=1.28,<2

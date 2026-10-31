@@ -145,7 +145,7 @@ public class Aiagent {
                             .stream()
                             .content());
 
-        } else if (lower.contains("create") || lower.contains("run")) {
+        } else if (lower.contains("create") && lower.contains("container")) {
             // detect image name and decide what to pull
             return handleCreateCommand(lower);
 
@@ -261,10 +261,10 @@ public class Aiagent {
                             .user(json)
                             .stream()
                             .content());
-        } else if (lower.contains("@k8s-boot") &&
-                lower.contains("list") && // logs, log
-                lower.contains("pods") // pod name
-        ) {
+        } else if (lower.contains("pod") &&
+                (lower.contains("list")
+                        || lower.contains("show")
+                        || lower.contains("running"))) {
             return mcpClientk8s.listPods()
                     .flatMapMany(json -> chatClient.prompt()
                             .system("""

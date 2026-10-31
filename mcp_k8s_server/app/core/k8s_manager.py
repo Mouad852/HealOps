@@ -3,11 +3,14 @@ from kubernetes.client.rest import ApiException
 import yaml
 import requests
 from fastapi import FastAPI, Query
+import os
 
+PROMETHEUS_BASE_URL = os.getenv(
+    "PROMETHEUS_BASE_URL",
+    "http://prometheus:9090"
+).rstrip("/")
 
-PROMETHEUS = "http://172.17.99.132:30090/query"
-
-
+PROMETHEUS_QUERY_URL = f"{PROMETHEUS_BASE_URL}/api/v1/query"
 
 class KubernetesManager:
     def __init__(self):
@@ -20,18 +23,24 @@ class KubernetesManager:
         self.core = client.CoreV1Api()
         self.apps = client.AppsV1Api()
         self.metrics = client.CustomObjectsApi()
-    
+
     # -------------------------------------------------------
     # CPU METRICS PODS
-    # -------------------------------------------------------   
-    def get_pod_cpu(pod):
+    # -------------------------------------------------------
+    def get_pod_cpu(self, pod):
         query = f'container_cpu_usage_seconds_total{{pod="{pod}"}}'
-        r = requests.get(PROMETHEUS, params={"query": query}).json()
+        r = requests.get(
+            PROMETHEUS_QUERY_URL,
+            params={"query": query}
+        ).json()
         return r["data"]["result"]
-    
-    def get_pod_memory(pod):
+
+    def get_pod_memory(self, pod):
         query = f'container_memory_usage_bytes{{pod="{pod}"}}'
-        r = requests.get(PROMETHEUS, params={"query": query}).json()
+        r = requests.get(
+            PROMETHEUS_QUERY_URL,
+            params={"query": query}
+        ).json()
         return r["data"]["result"]
 
 
@@ -54,7 +63,7 @@ class KubernetesManager:
              "containers": [c.name for c in p.spec.containers]
         })
         return result
-        
+
 
     # -------------------------------------------------------
     # GET LOGS
@@ -129,14 +138,14 @@ class KubernetesManager:
     # -------------------------------------------------------
     # GET DEPLOYMENT STATUS
     # -------------------------------------------------------
-    
-    
-    
-    
+
+
+
+
     def get_deployment(self, namespace: str, name: str):
         return self.apps.read_namespaced_deployment(name, namespace)
 
-    
+
     def analyze_pod(self, namespace: str, pod: str):
       analysis = {}
 

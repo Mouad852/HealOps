@@ -1,32 +1,31 @@
-version: "3"
 
 services:
 
- # cadvisor:
-  #  container_name: cadvisor
-   # image: gcr.io/cadvisor/cadvisor:v0.49.1
-    #privileged: true
-#    ports:
- #     - "8080:8080"
-#    volumes:
- #     - /:/rootfs:ro
-  #    - /var/run:/var/run:rw
-   #   - /sys:/sys:ro
-    #  - /var/lib/docker/:/var/lib/docker:ro
-#    networks:
-#      - mynetwork
+  cadvisor:
+    container_name: cadvisor
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - mynetwork
 
-#  prometheus:
- #   container_name: prometheus
-  #  image: prom/prometheus:latest
-  #  ports:
-   #   - "9090:9090"
-  #  volumes:
-   #   - ./mcp-server-promethus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-   # depends_on:
-  #    - cadvisor
-  #  networks:
-  #    - mynetwork
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./mcp-server-promethus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - cadvisor
+    networks:
+      - mynetwork
 
   docker-mcp:
     build:
@@ -38,34 +37,44 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock  # REQUIRED
     networks:
       - mynetwork
-    user: root               
-    privileged: true  
+    user: root
+    privileged: true
 
   monitoring-mcp:
     build:
       context: ./mcp-server-promethus
     environment:
-      PROMETHEUS_URL: "http://172.17.99.132:30090/query"
+      PROMETHEUS_BASE_URL: ${PROMETHEUS_BASE_URL:-http://prometheus:9090}
+      EMAIL_HOST: ${EMAIL_HOST:-smtp.gmail.com}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      EMAIL_USER: ${EMAIL_USER}
+      EMAIL_APP_PASSWORD: ${EMAIL_APP_PASSWORD}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO}
     ports:
-      - "9000:9000"
-   # depends_on:
-   #   - prometheus
+      - "9001:9000"
     networks:
       - mynetwork
-  
+
   k8s-mcp:
+    profiles:
+      - kubernetes
     build:
       context: ./mcp_k8s_server
+    environment:
+      PROMETHEUS_BASE_URL: ${PROMETHEUS_BASE_URL:-http://prometheus:9090}
+      KUBECONFIG: /root/.kube/config
+    volumes:
+      - "${USERPROFILE}/.kube/config-healops:/root/.kube/config:ro"
     ports:
       - "7777:7777"
     networks:
       - mynetwork
-  
+
   openstack-mcp:
     build:
       context: ./mcp_openstack_server
     environment:
-      PROMETHEUS_URL: "http://172.17.99.132:30090/query"
+      PROMETHEUS_BASE_URL: ${PROMETHEUS_BASE_URL:-http://prometheus:9090}
     ports:
       - "7779:7779"
     networks:
@@ -74,8 +83,6 @@ services:
   tracing-mcp:
     build:
       context: ./tracing_mcp
-    #environment:
-      #PROMETHEUS_URL: "http://172.17.99.132:30090/query"
     ports:
       - "9005:9005"
     networks:
@@ -86,15 +93,12 @@ services:
       context: ./Openstack-ai-agent
     environment:
       MCP_MONITOR_URL: "http://monitoring-mcp:9000"
-      MCP_k8s_URL: "http://k8s-mcp:7777"
-      MCP_openstack_URL: "http://openstack-mcp:7779"
+      MCP_K8S_URL: "http://k8s-mcp:7777"
+      MCP_OPENSTACK_URL: "http://openstack-mcp:7779"
       MCP_DOCKER_URL: "http://docker-mcp:8000"
-      mcp.server2.url: "http://monitoring-mcp:9000"
-      mcp.server1.url: "http://docker-mcp:8000"
-      mcp.server3.url: "http://k8s-mcp:9000"
-      mcp.server4.url: "http://openstack-mcp:7779"
-      mcp.trace.url :  "http://tracing-mcp:9005/apm"
-      
+      MCP_TRACING_URL: "http://tracing-mcp:9005/apm"
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+
     ports:
       - "8888:8888"
     depends_on:
