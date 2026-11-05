@@ -1,8 +1,33 @@
-# HealOps
+# HealOps — an infrastructure-observability assistant
 
-HealOps is a containerized DevOps assistant that combines a Gemini-powered Spring Boot agent with specialized API services for Docker, Prometheus, Kubernetes, OpenStack, and distributed tracing. It provides a simple Angular chat interface for inspecting infrastructure, reviewing health information, and running supported operational actions.
+HealOps is a containerized operations prototype that combines a Gemini-powered
+Spring Boot agent with specialized services for Docker, Prometheus, Kubernetes,
+OpenStack, and distributed tracing. Its Angular interface turns supported
+infrastructure questions into calls to those integrations.
 
-## Main features
+> **Scope:** HealOps is designed for local or controlled environments. It is a
+> portfolio prototype, not a production control plane.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  User[Operator] --> UI[Angular UI]
+  UI --> Agent[Spring Boot agent\nGemini-assisted]
+  Agent --> Docker[Docker service]
+  Agent --> Metrics[Prometheus service]
+  Agent --> K8s[Kubernetes service\noptional profile]
+  Agent --> OpenStack[OpenStack service]
+  Agent --> Tracing[Tracing service]
+  Metrics --> Prometheus[(Prometheus + cAdvisor)]
+  Tracing --> Jaeger[Jaeger-compatible API]
+```
+
+The agent formats or analyses responses from the integration services; the
+services themselves hold the Docker, Kubernetes, OpenStack, metrics, and tracing
+logic.
+
+## What it can do
 
 - List, inspect, start, stop, and troubleshoot Docker containers.
 - Collect container metrics through Prometheus and cAdvisor.
@@ -11,9 +36,18 @@ HealOps is a containerized DevOps assistant that combines a Gemini-powered Sprin
 - Query tracing information from a Jaeger-compatible data source.
 - Send monitoring alerts by email when email credentials are configured.
 
-## Architecture
+## Safety boundaries
 
-The Angular UI sends questions to the Spring Boot agent. The agent routes supported requests to the appropriate Python/FastAPI service, then uses Gemini to format or analyze the returned data.
+Some endpoints can change local infrastructure state: Docker start, stop,
+restart, create, and command execution; the optional Kubernetes integration can
+execute in pods, scale deployments, and apply manifests. The OpenStack restart
+path is explicitly a placeholder in the source.
+
+Run the stack only against systems you control and with least-privilege Docker,
+Kubernetes, and OpenStack credentials. The repository does not document a
+production authentication, authorization, approval, or audit layer around these
+actions, so it should not be exposed as an unauthenticated remote operations
+service.
 
 | Component | Purpose | Host port |
 | --- | --- | ---: |
@@ -99,6 +133,17 @@ Verify it with:
 ```powershell
 Invoke-RestMethod http://localhost:7777/k8s/pods
 ```
+
+## Validation and limitations
+
+- `docker compose ps -a` confirms the Compose services are running.
+- The Kubernetes service is optional and depends on a Docker Desktop cluster and
+  a container-reachable kubeconfig.
+- Gemini and email alerts require credentials supplied through `.env`; never
+  commit that file.
+- This README documents the checked-in integration surface. It does not claim a
+  hosted deployment, production access controls, or validation against a live
+  OpenStack environment.
 
 ## Useful URLs
 
