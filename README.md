@@ -8,6 +8,27 @@ infrastructure questions into calls to those integrations.
 > **Scope:** HealOps is designed for local or controlled environments. It is a
 > portfolio prototype, not a production control plane.
 
+## Modernization roadmap
+
+The planned evolution turns HealOps into an evidence-driven incident-response
+platform: incidents collect correlated telemetry, propose a policy-controlled
+remediation, wait for approval, verify the result, and retain the complete
+record for later review. The phased implementation guide is available in
+[the Incident Autopilot plan](docs/plans/incident-autopilot-platform.md), and
+completed work is recorded in [implementation progress](docs/implementation-progress.md).
+The initial consumer-facing incident contract is documented in
+[Incident API](docs/api/incident-api.md).
+Local database configuration and migration rules are documented in
+[PostgreSQL persistence](docs/architecture/postgresql-persistence.md).
+The controlled incident lifecycle is defined in
+[ADR-002: Incident state machine](docs/architecture/adr-002-incident-state-machine.md).
+Evidence retention, collection boundaries, and redaction limits are documented in
+[Evidence model](docs/architecture/evidence-model.md).
+
+We implement this roadmap incrementally. The current README describes the
+checked-in prototype; a capability is documented as available here only after
+its implementation and tests are complete.
+
 ## Architecture
 
 ```mermaid
