@@ -20,7 +20,7 @@ Approved / Frozen for Phase 0-11 implementation.
 - **UI Styling**: Bootstrap `5.3.x`, Bootstrap Icons `1.13.x`
 - **Metrics Visuals**: Chart.js `4.4.x` (pinned tree-shakeable components)
 - **Service Topology**: Cytoscape.js `3.30.x`
-- **Markdown Rendering**: Marked `16.4.x`, ngx-markdown `19.1.x`
+- **Markdown Rendering**: Marked `16.4.x`
 
 ## 3. Infrastructure & Python Adapters
 Container baseline pins:

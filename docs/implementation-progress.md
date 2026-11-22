@@ -210,7 +210,67 @@ Verification (2026-11-22):
 - `cd agentUI; npm test -- --watch=false --browsers=ChromeHeadless`: `TOTAL: 18 SUCCESS`; `cd agentUI; npm run build`: succeeded cleanly.
 - `docker compose --env-file .env.example config --quiet` & `docker compose --profile demo --env-file .env.example config --quiet`: both exited `0`.
 
+### Phase 11: Final Verification, Live Compose Demo Acceptance, Bundle Cleanup, and Release Readiness
+
+- **PostgreSQL 17.4 Testcontainers Live Verification**:
+  - Split `PostgresPersistenceTestcontainersTest` unique-constraint and JSONB-audit assertions into independent `@Test` transactions so PostgreSQL's strict aborted-transaction semantics after `uk_incidents_deduplication` violations are cleanly tested.
+  - Verified full Maven suite with Docker active: `Tests run: 91, Failures: 0, Errors: 0, Skipped: 0` across all 26 suites, confirming live PostgreSQL `17.4-alpine` Flyway `V1`–`V4` migrations, deduplication unique constraints, JSONB audit persistence, and `@Version` optimistic locking.
+- **OpenTelemetry Collector Live Validation & Telemetry Pipeline**:
+  - Validated `observability/otel-collector.yaml` directly via `otel/opentelemetry-collector-contrib:0.118.0 validate --config=/etc/otelcol-contrib/config.yaml` (exit code `0`).
+  - Extended `demo-workload/app.py` with best-effort OTLP log (`/v1/logs`) and OTLP metric (`/v1/metrics`) export alongside OTLP trace (`/v1/traces`) export (all gated by `DEMO_DISABLE_OTLP_EXPORT`) so live demo faults flow end-to-end through OTel Collector into Jaeger v2/v3, Loki v3, and Prometheus v3.
+  - Made `cadvisor` host port configurable (`${CADVISOR_PORT:-8080}:8080`) in `docker-compose.yml` to avoid local host port `8080` conflicts while preserving internal `cadvisor:8080` Prometheus scraping.
+- **Control-Plane Demo Resilience**:
+  - Added graceful deterministic fallback in `ConversationAssistantService` when external LLM calls fail (e.g., placeholder `GEMINI_API_KEY` in local/demo profiles), matching `IncidentDiagnosisService`.
+  - Scoped in-process Kubernetes replica/revision tracking in `DefaultRemediationAdapterClient` to isolated `demo-*` namespaces exclusively under the `demo` Spring profile so live `--profile demo` acceptance runs can exercise reversible `SCALE_K8S_DEPLOYMENT` rollback (`ROLLING_BACK` → `ROLLED_BACK`) alongside live `docker-mcp` container restarts without touching real clusters.
+- **Angular Production Bundle Budget Cleanup (`agentUI`)**:
+  - Replaced full `bootstrap.min.css` + `bootstrap-icons.min.css` (`316.54 kB`) with selective Bootstrap 5.3.8 SCSS partials and only the 31 rendered Bootstrap Icons in `agentUI/src/styles.scss` (updated `agentUI/angular.json` with Sass deprecation suppression on the `build` target and removed `styles.css`).
+  - Reduced initial production bundle from `641.85 kB` to **`469.64 kB`** (`107.57 kB` estimated transfer) — under the `500 kB` warning budget with **zero build warnings**, zero LightningCSS selector errors, and Chart.js + Cytoscape remaining lazy-loaded in `services-component` (`631.77 kB`).
+- **Automated Live Acceptance Suite (`scripts/run_acceptance.py`)**:
+  - Added repeatable live acceptance script verifying all Phase 11 criteria against the running 13-container `--profile demo` Compose stack:
+    1. **Contracts**: `agentservice` (`/actuator/health`), `agentuiservice` (Nginx reverse proxy), `docker-mcp`, `monitoring-mcp`, `openstack-mcp`, `tracing-mcp`, `demo-workload`, `otel-collector`, `jaeger` (`/api/v3/services`), `loki`, and `prometheus`.
+    2. **Happy path**: fault injection on `demo-workload` → alert intake & duplicate deduplication (`201` / `200`) → evidence collection (`ALERT_CONTEXT` + `docker`) → evidence-cited diagnosis → allowlisted `RESTART_CONTAINER` proposal → stale `expectedVersion` `409`, single approval `201`, idempotent replay `200`, second decision `409` → live Docker restart → `demo-workload` recovery (`200`) & `AFTER=HEALTHY`/`COMPLETE` → `CLOSED` → Markdown/JSON report → `DRAFT` runbook.
+    3. **Failure & rollback path**: reversible `SCALE_K8S_DEPLOYMENT` in `demo-sandbox` fails verification (missing/unavailable runtime telemetry is never treated as healthy) → transitions `ROLLING_BACK` → `ROLLED_BACK` with forward + rollback executions, `BEFORE`/`AFTER`/`POST_ROLLBACK` snapshots, and terminal report.
+    4. **Security**: `viewer` receives `403` on incident write, action approval, and runbook publish; `operator` receives `403` on unauthorized `prod` environment (`/overview`, `/events`, `/conversations`); SSE rejects query-string tokens (`400`).
+    5. **Durability**: persisted conversation (`4` messages) and PostgreSQL incident/report state + monotonic SSE `Last-Event-ID` replay (`39` events replayed after `Last-Event-ID>199`) verified across `docker compose --profile demo restart agentservice`.
+    6. **Observability**: live `demo-workload` trace verified in Jaeger v3 (`/api/v3/services` & `/api/v3/traces` + BFF `/api/v1/traces`), OTLP logs verified in Loki (`{service_name="demo-workload"}` with `trace_id`), and `otel-collector` target `up` + `healops_demo_workload_latency_ms_milliseconds` verified in Prometheus.
+
+Verification (2026-11-22):
+- `docker run --rm -v "...\observability\otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro" otel/opentelemetry-collector-contrib:0.118.0 validate --config=/etc/otelcol-contrib/config.yaml`: exited `0`.
+- `cd Openstack-ai-agent; .\mvnw.cmd test`: `Tests run: 91, Failures: 0, Errors: 0, Skipped: 0` (including 3/3 live PostgreSQL `17.4-alpine` Testcontainers tests).
+- `pytest` suites across adapters & demo workload: 15/15 passed (`mcp_docker_server` 4, `mcp_k8s_server` 3, `mcp_openstack_server` 3, `mcp-server-promethus` 2, `tracing_mcp` 2, `demo-workload` 1).
+- `cd agentUI; npm run build`: `Initial total: 469.64 kB` (0 budget warnings, 0 Sass/CSS warnings, lazy `services-component`); `npm test -- --watch=false --browsers=ChromeHeadless`: `TOTAL: 18 SUCCESS`.
+- `python scripts/run_acceptance.py --env-file .env.example` against live `--profile demo` stack (`SPRING_PROFILES_ACTIVE=demo`): `ALL PHASE 11 LIVE ACCEPTANCE CHECKS PASSED!` (exit code `0`).
+- `python scripts/verify_security_antipatterns.py`: 6/6 check groups PASSED.
+- Demo Compose stack cleanly stopped (`docker compose --env-file .env.example --profile demo down`) after acceptance verification.
+
+### Phase 12: Portfolio Hardening, Portability & Release Polish (Tiers 1–3)
+
+- **Tier 1 — Legacy Pruning, Copilot Tools, Live Observability & Dashboard Polish**:
+  - Removed legacy `AgentAI/Aiagent.java`, `Controller/AgentController.java` (`/AskAgent` & `/api/AskAgent`), and all five legacy `McpClient/*` classes in favor of typed Spring-managed `WebClient.Builder` clients and persistent `/api/v1/conversations`.
+  - Added bounded, environment-isolated read-only Spring AI `@Tool` callbacks (`CopilotToolQueryService`) for Operations Copilot queries and added `ConversationAssistantServiceTest`.
+  - Extended live Prometheus, Loki, and Jaeger v3 BFF query integration with graceful fallback (`ObservabilityLiveFallbackTest`).
+  - Added Markdown report rendering (`marked`) with `DomSanitizer` in `incident-detail.component.ts` and expanded Angular feature specs (`dashboard.component.spec.ts`, `incident-detail.component.spec.ts`, `services.component.spec.ts`, `runbooks.component.spec.ts`).
+- **Tier 2 — Repository Scoping & Adapter Collector Hardening**:
+  - Replaced broad scans with environment-scoped repository queries across incident, evidence, diagnosis, remediation, report, analytics, and retention services.
+  - Hardened `DockerEvidenceCollector` and `AdapterEvidenceCollectorSupport` with dedicated unit tests under `Openstack-ai-agent/src/test/java/com/example/Openstack_ai_agent/evidence/`.
+- **Tier 3 — Dependency Pruning, Cross-Platform Portability & Portfolio Presentation**:
+  - `Openstack-ai-agent/pom.xml`: removed unused `io.modelcontextprotocol.sdk:mcp` (and unused MCP `TRACE` logger lines in `application.properties`), replaced the hardcoded `${user.home}/.m2/...` ByteBuddy agent path with `maven-dependency-plugin:properties` (`-javaagent:${net.bytebuddy:byte-buddy-agent:jar} -XX:+EnableDynamicAgentLoading`), and upgraded `springdoc-openapi-starter-webmvc-ui` from `2.5.0` to `2.8.8` with a new `/v3/api-docs` test in `OpenstackAiAgentApplicationTests`.
+  - `agentUI/package.json` & `package-lock.json`: removed unused `ngx-markdown` while retaining `marked` for incident report rendering, and synced `docs/architecture/technology-baseline.md`.
+  - Python adapters: removed unused `numpy` and `scikit-learn` from `mcp-server-promethus/requirements.txt`, removed unused `httpx`, `numpy`, `pydantic`, and `mcp` from `tracing_mcp/requirements.txt`, pruned unused extras from `mcp_k8s_server/requirements.txt` and `mcp_openstack_server/requirements.txt`, and pinned versions consistently across all adapter `requirements.txt` files (`fastapi==0.115.12`, `uvicorn==0.34.0`, `requests==2.32.3`, etc.).
+  - Deleted dead/redundant files (`mcp-server-promethus/test.py`, `mcp-server-promethus/docker-compose.yml`, `mcp_docker_server/config/settings.yaml`, `mcp_docker_server/utils/logger.py`, and empty `mcp_k8s_server/app/utils/auth.py`).
+  - Updated `docker-compose.yml` to use cross-platform `${KUBECONFIG_PATH:-./.kube/config-healops}` instead of `${USERPROFILE}/.kube/config-healops` and gated `openstack-mcp` under `--profile openstack` as an optional/simulated adapter profile.
+  - Removed the duplicate `host.docker.internal:8080` scrape target from `mcp-server-promethus/prometheus.yml` (keeping `cadvisor:8080` and `otel-collector:8889`).
+  - Updated `scripts/run_acceptance.py` to send `"reason"` (matching `SubmitApprovalDecisionRequest`) in all `/api/v1/approvals/{actionId}/decisions` payloads, assert `reason` persistence, and gate `openstack-mcp` contract checks behind `--with-openstack`.
+  - Polished `README.md` with a portfolio summary, tech stack table, accurate architecture diagram, **"What's Live vs. Simulated"** table, and **Screenshots & Demo Walkthrough** section (`docs/images/`).
+
+Verification (2026-11-22):
+- `python scripts/verify_security_antipatterns.py`: 6/6 check groups PASSED.
+- `docker compose --env-file .env.example config --quiet` & `docker compose --profile demo --env-file .env.example config --quiet`: both exited `0`.
+- `cd Openstack-ai-agent; .\mvnw.cmd test`: `Tests run: 107, Failures: 0, Errors: 0, Skipped: 0` (including `/v3/api-docs` with Springdoc `2.8.8` and live PostgreSQL Testcontainers).
+- `pytest mcp_docker_server/tests mcp_k8s_server/tests mcp_openstack_server/tests mcp-server-promethus/tests tracing_mcp/tests demo-workload/tests`: `22 passed`.
+- `cd agentUI; npm test -- --watch=false --browsers=ChromeHeadless`: `TOTAL: 23 SUCCESS`; `npm run build`: `Initial total: 477.02 kB` (0 warnings).
+
 ## Status
 
-Phases 0–10 are implemented and verified. Next operational step before any non-local deployment is running live acceptance tests against a full Compose `--profile demo` stack and integrating production SSO/network isolation controls as documented in `README.md`.
+**Phases 0–12 (including Tiers 1–3) are complete and verified end-to-end.** HealOps is clean, portable, and ready for GitHub portfolio showcase, local development, staging sandboxes, and demonstration deployments. Production rollout still requires completing the operational prerequisites documented in `README.md` (enterprise OIDC/SSO, external secret management, internal adapter network isolation, backup/retention SLA review, and live multi-node Kubernetes/OpenStack cluster validation).
 

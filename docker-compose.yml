@@ -23,7 +23,7 @@ services:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     privileged: true
     ports:
-      - "8080:8080"
+      - "${CADVISOR_PORT:-8080}:8080"
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:rw
@@ -115,13 +115,17 @@ services:
       PROMETHEUS_BASE_URL: ${PROMETHEUS_BASE_URL:-http://prometheus:9090}
       KUBECONFIG: /root/.kube/config
     volumes:
-      - "${USERPROFILE}/.kube/config-healops:/root/.kube/config:ro"
+      - "${KUBECONFIG_PATH:-./.kube/config-healops}:/root/.kube/config:ro"
     ports:
       - "7777:7777"
     networks:
       - mynetwork
 
+  # Optional OpenStack adapter profile: enable with `--profile openstack` when targeting
+  # a live OpenStack cluster (simulated/JSONL log store when no OpenStack nodes are attached).
   openstack-mcp:
+    profiles:
+      - openstack
     build:
       context: ./mcp_openstack_server
     environment:
@@ -187,9 +191,10 @@ services:
       - "8095:8095"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8095/health', timeout=2)\""]
-      interval: 10s
-      timeout: 3s
+      interval: 2s
+      timeout: 2s
       retries: 5
+      start_period: 1s
     depends_on:
       - otel-collector
     networks:
