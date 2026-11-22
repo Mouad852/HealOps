@@ -56,6 +56,15 @@ class OpenstackAiAgentApplicationTests {
 	}
 
 	@Test
+	@WithMockUser(username = "viewer", authorities = {"ROLE_VIEWER", "incident:read"})
+	void openApiDocsEndpointLoadsWithoutError() throws Exception {
+		mockMvc.perform(get("/v3/api-docs"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.openapi").exists())
+				.andExpect(jsonPath("$.paths['/api/v1/incidents']").exists());
+	}
+
+	@Test
 	void unauthenticatedRequestsToApiAreRejectedWhileHealthIsPublic() throws Exception {
 		mockMvc.perform(get("/actuator/health"))
 				.andExpect(status().isOk());
@@ -261,13 +270,48 @@ class OpenstackAiAgentApplicationTests {
 				.contentType(MediaType.APPLICATION_JSON)
 				.content("""
 						{
-						  "event": "ACTION_APPROVED",
+						  "event": "EVIDENCE_GATHERED",
 						  "actor": "operator",
 						  "expectedVersion": 0
 						}
 						"""))
 				.andExpect(status().isConflict())
 				.andExpect(jsonPath("$.title").value("Incident transition conflict"));
+	}
+
+	@Test
+	@WithMockUser(username = "operator", authorities = {"ROLE_OPERATOR", "incident:read", "incident:write"})
+	void rejectsRestrictedApprovalExecutionAndRollbackManualTransitionsWith403() throws Exception {
+		String request = INCIDENT_REQUEST.replace("checkout-api-high-error-rate", "checkout-api-restricted-transition-test");
+		MvcResult created = mockMvc.perform(post("/api/v1/incidents")
+				.with(csrf())
+				.contentType(MediaType.APPLICATION_JSON)
+				.content(request))
+				.andExpect(status().isCreated())
+				.andReturn();
+
+		String incidentId = objectMapper.readTree(created.getResponse().getContentAsString()).get("id").asText();
+		for (String payload : new String[] {
+				"""
+				{"event":"ACTION_APPROVED","actor":"operator","expectedVersion":0}
+				""",
+				"""
+				{"event":"EXECUTION_SUCCEEDED","actor":"operator","expectedVersion":0}
+				""",
+				"""
+				{"event":"EXECUTION_FAILED","failureDisposition":"ROLLING_BACK","actor":"operator","expectedVersion":0}
+				""",
+				"""
+				{"event":"ROLLBACK_SUCCEEDED","actor":"operator","expectedVersion":0}
+				"""
+		}) {
+			mockMvc.perform(post("/api/v1/incidents/{incidentId}/transitions", incidentId)
+					.with(csrf())
+					.contentType(MediaType.APPLICATION_JSON)
+					.content(payload))
+					.andExpect(status().isForbidden())
+					.andExpect(jsonPath("$.title").value("Access denied"));
+		}
 	}
 
 	@Test
