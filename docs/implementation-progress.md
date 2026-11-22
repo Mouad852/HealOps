@@ -110,7 +110,19 @@ Verification: `docker-compose --env-file .env.example config -q` passed with exi
 
 Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 15/15 tests (`OpenstackAiAgentApplicationTests`, `IncidentTransitionMapTest`, and `IncidentOrchestrationIntegrationTest`) on 2026-11-22.
 
+### Phase 5 (Part 2): Diagnosis, `BEFORE` Health Snapshots, & Allowlisted Action Proposals
+
+- Added JPA entities and repositories matching `V3` schema under `ddl-auto=validate`: `HealthSnapshotEntity` (`health_snapshots` with `BEFORE`/`AFTER`/`POST_ROLLBACK`), `DiagnosisEntity` (`diagnoses`), and `ProposedActionEntity` (`proposed_actions` with `@Version` optimistic locking, `ActionRiskLevel`, and `ProposedActionStatus`).
+- Added `HealthSnapshotService` to capture normalized baseline `BEFORE` health signals before proposing remediation and expose before/after/post-rollback comparisons.
+- Added pure `DeterministicDiagnosticsEngine` (`deterministic-rules-v1.0.0`) covering container/pod/OpenStack status, restarts, OOMKilled, CrashLoopBackOff, ImagePullBackOff, probe failures, error rate, latency, CPU/memory saturation (ignoring raw cumulative Docker CPU counters), and partial/missing telemetry (`COLLECTION_ERROR` never treated as healthy).
+- Added allowlisted typed `ActionType` catalog (`NO_ACTION`, `RESTART_CONTAINER`, `RESTART_K8S_WORKLOAD`, `SCALE_K8S_DEPLOYMENT` bounded 1–10 replicas, `ROLLBACK_K8S_DEPLOYMENT`, `RESTART_OPENSTACK_SERVICE`) and strict `ActionCatalogValidator` with regex/range checks and human-readable command previews.
+- Added Spring AI `1.0.3` structured `LlmDiagnosisService` (guarded by `healops.diagnosis.llm-enabled`, defaulting to `false` in tests with bounded/redacted prompts and deterministic fallback) and strict `DiagnosisValidationService` rejecting hallucinated `evidence_items` UUIDs and invalid actions.
+- Added `DiagnosisOrchestrationListener` (`@ApplicationModuleListener(propagation = Propagation.NOT_SUPPORTED)`) handling `IncidentSignalsCorrelatedEvent` without holding DB transactions during LLM calls, persisting `BEFORE` snapshot, diagnosis, optional proposed action, and `approval.created` dashboard event in short transactions, and transitioning via `ACTION_PROPOSED` (`AWAITING_APPROVAL`) or `NO_ACTION_REQUIRED` (`VERIFYING`).
+- Added RBAC-protected (`incident:read`) read APIs: `GET /api/v1/incidents/{incidentId}/diagnoses`, `/proposed-actions`, and `/health-comparisons`.
+
+Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 30/30 tests (`OpenstackAiAgentApplicationTests`, `IncidentTransitionMapTest`, `IncidentOrchestrationIntegrationTest`, `ActionCatalogValidatorTest`, `DeterministicDiagnosticsEngineTest`, and `DiagnosisValidationServiceTest`) on 2026-11-22.
+
 ## Next milestone
 
-Implement Phase 5 diagnosis & action proposals (`BEFORE` health snapshot, deterministic diagnostic rules, validated structured LLM diagnosis with evidence ID citations, and the allowlisted action catalog) followed by Phase 6 policy evaluation, approval queue API, safe `ActionExecutor`s, verification, and rollback.
+Implement Phase 6 policy evaluation, approval queue API (`GET /api/v1/approvals`, `POST /api/v1/approvals/{approvalId}/decisions`), safe `ActionExecutor`s, post-execution `AFTER` health verification, and rollback (`POST_ROLLBACK`).
 

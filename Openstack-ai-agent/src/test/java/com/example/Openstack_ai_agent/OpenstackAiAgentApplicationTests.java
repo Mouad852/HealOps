@@ -62,6 +62,14 @@ class OpenstackAiAgentApplicationTests {
 
 		mockMvc.perform(get("/api/v1/incidents"))
 				.andExpect(status().isUnauthorized());
+
+		UUID randomId = UUID.randomUUID();
+		mockMvc.perform(get("/api/v1/incidents/{incidentId}/diagnoses", randomId))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/v1/incidents/{incidentId}/proposed-actions", randomId))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/v1/incidents/{incidentId}/health-comparisons", randomId))
+				.andExpect(status().isUnauthorized());
 	}
 
 	@Test
