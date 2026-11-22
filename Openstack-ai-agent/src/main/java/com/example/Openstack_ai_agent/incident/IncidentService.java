@@ -81,7 +81,7 @@ public class IncidentService {
                 request
         ));
         recordDashboardUpdate(updatedIncident, request.event().name(), request.actor());
-        publishNextWorkflowEventIfEnabled(updatedIncident, request.event(), request.metadata());
+        publishNextWorkflowEventIfEnabled(updatedIncident, toStatus, request.event(), request.actor(), request.reason(), request.metadata());
         return toResponse(updatedIncident);
     }
 
@@ -132,15 +132,19 @@ public class IncidentService {
 
     private void publishNextWorkflowEventIfEnabled(
             IncidentEntity incident,
+            IncidentStatus toStatus,
             IncidentWorkflowEvent workflowEvent,
+            String actor,
+            String reason,
             Map<String, String> metadata
     ) {
         if (!autoOrchestrate) {
             return;
         }
+        Map<String, String> safeMetadata = metadata == null ? Map.of() : metadata;
         if (workflowEvent == IncidentWorkflowEvent.EVIDENCE_GATHERED) {
-            int evidenceCount = parseIntOrZero(metadata.get("evidenceCount"));
-            int errorCount = parseIntOrZero(metadata.get("collectionErrorCount"));
+            int evidenceCount = parseIntOrZero(safeMetadata.get("evidenceCount"));
+            int errorCount = parseIntOrZero(safeMetadata.get("collectionErrorCount"));
             eventPublisher.publishEvent(new IncidentEvidenceGatheredEvent(
                     incident.getId(),
                     incident.getEnvironmentId(),
@@ -150,8 +154,8 @@ public class IncidentService {
                     incident.getTraceId()
             ));
         } else if (workflowEvent == IncidentWorkflowEvent.SIGNALS_CORRELATED) {
-            int evidenceCount = parseIntOrZero(metadata.get("evidenceCount"));
-            int matchedTraceCount = parseIntOrZero(metadata.get("matchedTraceCount"));
+            int evidenceCount = parseIntOrZero(safeMetadata.get("evidenceCount"));
+            int matchedTraceCount = parseIntOrZero(safeMetadata.get("matchedTraceCount"));
             eventPublisher.publishEvent(new IncidentSignalsCorrelatedEvent(
                     incident.getId(),
                     incident.getEnvironmentId(),
@@ -160,6 +164,45 @@ public class IncidentService {
                     matchedTraceCount,
                     incident.getTraceId()
             ));
+        } else if (workflowEvent == IncidentWorkflowEvent.ACTION_APPROVED) {
+            eventPublisher.publishEvent(new IncidentActionApprovedEvent(
+                    incident.getId(),
+                    parseUuidOrNull(safeMetadata.get("actionId")),
+                    incident.getEnvironmentId(),
+                    incident.getService(),
+                    actor,
+                    incident.getTraceId()
+            ));
+        } else if (workflowEvent == IncidentWorkflowEvent.EXECUTION_SUCCEEDED
+                || workflowEvent == IncidentWorkflowEvent.NO_ACTION_REQUIRED) {
+            eventPublisher.publishEvent(new IncidentVerificationRequestedEvent(
+                    incident.getId(),
+                    parseUuidOrNull(safeMetadata.get("actionId")),
+                    incident.getEnvironmentId(),
+                    incident.getService(),
+                    workflowEvent.name(),
+                    incident.getTraceId()
+            ));
+        } else if (toStatus == IncidentStatus.ROLLING_BACK) {
+            eventPublisher.publishEvent(new IncidentRollbackRequestedEvent(
+                    incident.getId(),
+                    parseUuidOrNull(safeMetadata.get("actionId")),
+                    incident.getEnvironmentId(),
+                    incident.getService(),
+                    reason,
+                    incident.getTraceId()
+            ));
+        }
+    }
+
+    private UUID parseUuidOrNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(value.trim());
+        } catch (IllegalArgumentException ignored) {
+            return null;
         }
     }
 

@@ -35,26 +35,26 @@ public class DeterministicDiagnosticsEngine {
     public static final String RULE_VERSION = "deterministic-rules-v1.0.0";
 
     private static final Pattern RESTART_COUNT_PATTERN = Pattern.compile(
-            "(?i)(?:restart[_\\s]?count|restarts)\\s*[:=]\\s*(\\d+)"
+            "(?i)(?:restart[_\\s]?count|restarts)\"?\\s*[:=]\\s*\"?(\\d+)"
     );
     private static final Pattern ERROR_RATE_PATTERN = Pattern.compile(
-            "(?i)error[_\\s]?rate(?:_percent)?\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)%?"
+            "(?i)error[_\\s]?rate(?:_percent)?\"?\\s*[:=]\\s*\"?(\\d+(?:\\.\\d+)?)%?"
     );
     private static final Pattern LATENCY_MS_PATTERN = Pattern.compile(
-            "(?i)(?:latency_ms|p99_latency_ms|p99|latency)\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)\\s*(ms|s)?"
+            "(?i)(?:latency_ms|p99_latency_ms|p99|latency)\"?\\s*[:=]\\s*\"?(\\d+(?:\\.\\d+)?)\\s*(ms|s)?"
     );
     // Explicitly match normalized percentage labels; never match raw cumulative CPU counters (e.g. total_usage)
     private static final Pattern CPU_PERCENT_PATTERN = Pattern.compile(
-            "(?i)(?:cpu_percent|cpu_usage_percent|cpu_utilization)\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)%?|(?i)\\bcpu\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)%"
+            "(?i)(?:cpu_percent|cpu_usage_percent|cpu_utilization)\"?\\s*[:=]\\s*\"?(\\d+(?:\\.\\d+)?)%?|(?i)\\bcpu\"?\\s*[:=]\\s*\"?(\\d+(?:\\.\\d+)?)%"
     );
     private static final Pattern MEMORY_PERCENT_PATTERN = Pattern.compile(
-            "(?i)(?:memory_percent|memory_usage_percent|mem_percent|memory_utilization)\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)%?|(?i)\\b(?:memory|mem)\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)%"
+            "(?i)(?:memory_percent|memory_usage_percent|mem_percent|memory_utilization)\"?\\s*[:=]\\s*\"?(\\d+(?:\\.\\d+)?)%?|(?i)\\b(?:memory|mem)\"?\\s*[:=]\\s*\"?(\\d+(?:\\.\\d+)?)%"
     );
     private static final Pattern REPLICAS_PATTERN = Pattern.compile(
-            "(?i)(?:replicas|current_replicas)\\s*[:=]\\s*(\\d+)"
+            "(?i)(?:replicas|current_replicas)\"?\\s*[:=]\\s*\"?(\\d+)"
     );
     private static final Pattern PREVIOUS_REVISION_PATTERN = Pattern.compile(
-            "(?i)(?:previous_revision|rollback_revision)\\s*[:=]\\s*(\\d+)"
+            "(?i)(?:previous_revision|rollback_revision)\"?\\s*[:=]\\s*\"?(\\d+)"
     );
 
     public DeterministicDiagnosticsResult diagnose(
@@ -137,6 +137,12 @@ public class DeterministicDiagnosticsEngine {
                     "failed to start", "inactive (dead)")) {
                 workloadUnhealthyIds.add(item.id());
                 workloadStatus = prioritizeStatus(workloadStatus, "Unhealthy");
+            } else if (workloadStatus == null && containsAny(lower,
+                    "status=running", "status: running", "\"status\":\"running\"",
+                    "phase=running", "phase: running", "\"phase\":\"running\"",
+                    "active (running)", "\"healthy\":true", "healthy=true", "ready=true", "ready\":true",
+                    "\"ready\":\"1/1\"", "\"ready\":\"2/2\"", "\"ready\":\"3/3\"")) {
+                workloadStatus = "Running";
             }
 
             Integer restarts = extractInt(RESTART_COUNT_PATTERN, combined);
@@ -315,7 +321,12 @@ public class DeterministicDiagnosticsEngine {
         }
 
         String telemetryStatus = computeTelemetryStatus(orderedEvidence.size(), runtimeEvidenceCount, collectionErrorIds.size());
-        String healthStatus = computeHealthStatus(findings, telemetryStatus, incident.severity());
+        boolean hasNormalizedMetricSignal = maxRestartCount != null
+                || maxErrorRatePercent != null
+                || maxLatencyMs != null
+                || maxCpuPercent != null
+                || maxMemoryPercent != null;
+        String healthStatus = computeHealthStatus(findings, telemetryStatus, incident.severity(), workloadStatus, hasNormalizedMetricSignal);
 
         List<DiagnosisHypothesis> hypotheses = buildHypotheses(incident, orderedEvidence, findings, telemetryStatus);
         BigDecimal overallConfidence = computeOverallConfidence(hypotheses, collectionErrorIds.size(), runtimeEvidenceCount);
@@ -533,7 +544,9 @@ public class DeterministicDiagnosticsEngine {
     private String computeHealthStatus(
             List<DeterministicFinding> findings,
             String telemetryStatus,
-            IncidentSeverity severity
+            IncidentSeverity severity,
+            String workloadStatus,
+            boolean hasNormalizedMetricSignal
     ) {
         boolean hasCriticalOrUnhealthy = findings.stream().anyMatch(f ->
                 Set.of("OOM_KILLED", "CRASH_LOOP_BACKOFF", "IMAGE_PULL_BACKOFF", "WORKLOAD_UNHEALTHY", "PROBE_FAILURE", "HIGH_ERROR_RATE")
@@ -549,6 +562,9 @@ public class DeterministicDiagnosticsEngine {
         }
         if (!"COMPLETE".equals(telemetryStatus)) {
             return "UNKNOWN";
+        }
+        if (findings.isEmpty() && ("Running".equals(workloadStatus) || hasNormalizedMetricSignal)) {
+            return "HEALTHY";
         }
         return (severity == IncidentSeverity.CRITICAL || severity == IncidentSeverity.HIGH) ? "DEGRADED" : "UNKNOWN";
     }

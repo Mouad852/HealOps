@@ -73,6 +73,34 @@ public class ProposedActionEntity {
         return entity;
     }
 
+    void markApproved() {
+        if (this.status != ProposedActionStatus.PROPOSED) {
+            throw new IllegalStateException("Cannot approve action " + id + " from status " + status);
+        }
+        this.status = ProposedActionStatus.APPROVED;
+    }
+
+    void markRejected() {
+        if (this.status != ProposedActionStatus.PROPOSED) {
+            throw new IllegalStateException("Cannot reject action " + id + " from status " + status);
+        }
+        this.status = ProposedActionStatus.REJECTED;
+    }
+
+    void markExecuted() {
+        if (this.status != ProposedActionStatus.APPROVED) {
+            throw new IllegalStateException("Cannot mark action " + id + " as EXECUTED from status " + status);
+        }
+        this.status = ProposedActionStatus.EXECUTED;
+    }
+
+    void markFailed() {
+        if (this.status != ProposedActionStatus.APPROVED && this.status != ProposedActionStatus.EXECUTED) {
+            throw new IllegalStateException("Cannot mark action " + id + " as FAILED from status " + status);
+        }
+        this.status = ProposedActionStatus.FAILED;
+    }
+
     public UUID getId() { return id; }
     public UUID getIncidentId() { return incidentId; }
     public UUID getDiagnosisId() { return diagnosisId; }

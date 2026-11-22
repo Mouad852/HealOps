@@ -1,12 +1,18 @@
 package com.example.Openstack_ai_agent.common.api;
 
+import com.example.Openstack_ai_agent.evidence.EvidenceCollectionNotAllowedException;
 import com.example.Openstack_ai_agent.incident.IncidentNotFoundException;
 import com.example.Openstack_ai_agent.incident.IncidentVersionConflictException;
 import com.example.Openstack_ai_agent.incident.InvalidIncidentTransitionException;
-import com.example.Openstack_ai_agent.evidence.EvidenceCollectionNotAllowedException;
+import com.example.Openstack_ai_agent.remediation.ActionCatalogValidationException;
+import com.example.Openstack_ai_agent.remediation.ApprovalConflictException;
+import com.example.Openstack_ai_agent.remediation.PolicyDeniedException;
+import com.example.Openstack_ai_agent.remediation.ProposedActionNotFoundException;
+import jakarta.persistence.OptimisticLockException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -24,6 +30,15 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(problem);
     }
 
+    @ExceptionHandler(PolicyDeniedException.class)
+    public ResponseEntity<ProblemDetail> handlePolicyDenied(PolicyDeniedException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, exception.getMessage());
+        problem.setTitle("Policy denied");
+        problem.setProperty("policyVersion", exception.getDecision().policyVersion());
+        problem.setProperty("ruleId", exception.getDecision().ruleId());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(problem);
+    }
+
     @ExceptionHandler(IncidentNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleIncidentNotFound(IncidentNotFoundException exception) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, exception.getMessage());
@@ -31,15 +46,32 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
     }
 
+    @ExceptionHandler(ProposedActionNotFoundException.class)
+    public ResponseEntity<ProblemDetail> handleProposedActionNotFound(ProposedActionNotFoundException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, exception.getMessage());
+        problem.setTitle("Proposed action not found");
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
+    }
+
     @ExceptionHandler({
             InvalidIncidentTransitionException.class,
             IncidentVersionConflictException.class,
-            EvidenceCollectionNotAllowedException.class
+            EvidenceCollectionNotAllowedException.class,
+            ApprovalConflictException.class,
+            ObjectOptimisticLockingFailureException.class,
+            OptimisticLockException.class
     })
     public ResponseEntity<ProblemDetail> handleTransitionConflict(RuntimeException exception) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, exception.getMessage());
         problem.setTitle("Incident transition conflict");
         return ResponseEntity.status(HttpStatus.CONFLICT).body(problem);
+    }
+
+    @ExceptionHandler({IllegalArgumentException.class, ActionCatalogValidationException.class})
+    public ResponseEntity<ProblemDetail> handleBadRequest(RuntimeException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, exception.getMessage());
+        problem.setTitle("Invalid request");
+        return ResponseEntity.badRequest().body(problem);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

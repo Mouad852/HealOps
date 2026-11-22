@@ -86,9 +86,9 @@ class IncidentOrchestrationIntegrationTest {
         assertThat(created.created()).isTrue();
         UUID incidentId = created.incident().id();
 
-        IncidentResponse finalState = awaitStatus(incidentId, IncidentStatus.VERIFYING, Duration.ofSeconds(10));
-        assertThat(finalState.status()).isEqualTo(IncidentStatus.VERIFYING);
-        assertThat(finalState.version()).isEqualTo(4L);
+        IncidentResponse finalState = awaitStatus(incidentId, IncidentStatus.FAILED, Duration.ofSeconds(10));
+        assertThat(finalState.status()).isEqualTo(IncidentStatus.FAILED);
+        assertThat(finalState.version()).isEqualTo(5L);
 
         List<IncidentEventResponse> timeline = incidentService.findTimeline(incidentId);
         assertThat(timeline)
@@ -98,7 +98,8 @@ class IncidentOrchestrationIntegrationTest {
                         IncidentWorkflowEvent.COLLECTION_STARTED,
                         IncidentWorkflowEvent.EVIDENCE_GATHERED,
                         IncidentWorkflowEvent.SIGNALS_CORRELATED,
-                        IncidentWorkflowEvent.NO_ACTION_REQUIRED
+                        IncidentWorkflowEvent.NO_ACTION_REQUIRED,
+                        IncidentWorkflowEvent.VERIFICATION_FAILED
                 );
 
         List<EvidenceItemResponse> evidence = evidenceCollectionService.findAll(incidentId);
@@ -112,7 +113,10 @@ class IncidentOrchestrationIntegrationTest {
         assertThat(health.before().snapshotPhase()).isEqualTo(HealthSnapshotPhase.BEFORE);
         assertThat(health.before().signals().get("telemetryStatus")).isEqualTo("UNAVAILABLE");
         assertThat(health.before().signals().get("healthStatus")).isNotEqualTo("HEALTHY");
-        assertThat(health.after()).isNull();
+        assertThat(health.after()).isNotNull();
+        assertThat(health.after().snapshotPhase()).isEqualTo(HealthSnapshotPhase.AFTER);
+        assertThat(health.after().signals().get("telemetryStatus")).isEqualTo("UNAVAILABLE");
+        assertThat(health.after().signals().get("healthStatus")).isNotEqualTo("HEALTHY");
 
         List<DiagnosisResponse> diagnoses = diagnosisPersistenceService.findDiagnoses(incidentId);
         assertThat(diagnoses).hasSize(1);
@@ -125,7 +129,7 @@ class IncidentOrchestrationIntegrationTest {
         assertThat(dashboardEventRepository.findByIncidentIdOrderBySequenceNumberAsc(incidentId))
                 .extracting(DashboardEventEntity::getEventType)
                 .doesNotContain("approval.created")
-                .hasSize(5);
+                .hasSize(6);
 
         mockMvc.perform(get("/api/v1/incidents/{incidentId}/diagnoses", incidentId))
                 .andExpect(status().isOk())

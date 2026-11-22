@@ -70,6 +70,10 @@ class OpenstackAiAgentApplicationTests {
 				.andExpect(status().isUnauthorized());
 		mockMvc.perform(get("/api/v1/incidents/{incidentId}/health-comparisons", randomId))
 				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/v1/approvals"))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(get("/api/v1/tool-executions"))
+				.andExpect(status().isUnauthorized());
 	}
 
 	@Test

@@ -122,7 +122,19 @@ Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 15/15 tests (`Open
 
 Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 30/30 tests (`OpenstackAiAgentApplicationTests`, `IncidentTransitionMapTest`, `IncidentOrchestrationIntegrationTest`, `ActionCatalogValidatorTest`, `DeterministicDiagnosticsEngineTest`, and `DiagnosisValidationServiceTest`) on 2026-11-22.
 
+### Phase 6: Policy Evaluation, Approval Queue API, Safe `ActionExecutor`s, `AFTER` Verification, Rollback (`POST_ROLLBACK`), & Append-Only Audit Records
+
+- Mapped `V3` schema JPA entities and repositories under `ddl-auto=validate`: `ApprovalDecisionEntity` (`approval_decisions`), `ToolExecutionEntity` (`tool_executions`), `AuditRecordEntity` (`audit_records`), and `RemediationOutcomeEntity` (`remediation_outcomes`), keeping decisions and audit records append-only and adding controlled status transitions on `ProposedActionEntity`.
+- Implemented OPA-ready `PolicyEvaluator` SPI with versioned `InProcessPolicyEvaluator` (`policy-v1.0.0`) checking approval authority (`incident:approve`), environment scope (`env:<environmentId>`), allowlisted action catalog validation, protected Kubernetes namespace blocks (`kube-system`/`kube-public`/`kube-node-lease`), and elevated risk rules (`CRITICAL`, production `HIGH`).
+- Implemented append-only `AuditService` (`Propagation.REQUIRES_NEW`) recording actor from `Authentication`, operation, target resource, outcome (`SUCCESS`/`DENIED`/`FAILED`), `policyVersion`, trace ID, and timestamp across policy denials, approvals, executions, verification, and rollback.
+- Added Approval Queue & Decision API (`GET /api/v1/approvals?environmentId=&status=PROPOSED` filtered by caller's `env:*` authorities; `POST /api/v1/approvals/{actionId}/decisions` deriving `actor` strictly from `Authentication`, enforcing `Idempotency-Key`, optimistic `expectedVersion` `409 Conflict`, policy `403 Forbidden` with durable `DENIED` audit rows, `approval.updated` dashboard events, and server-side workflow transitions without exposing a direct execution endpoint) plus `GET /api/v1/tool-executions?incidentId=`.
+- Implemented typed non-shell `ActionExecutor` SPI and all five allowlisted executors (`RestartContainerExecutor`, `RestartK8sWorkloadExecutor`, `ScaleK8sDeploymentExecutor`, `RollbackK8sDeploymentExecutor`, `RestartOpenstackServiceExecutor`) over Spring-managed `WebClient.Builder` (`DefaultRemediationAdapterClient`, guarded by `healops.remediation.live-adapter-enabled` for deterministic testing) with bounded timeouts, unique idempotency keys (`exec:<actionId>:attempt:<n>` / `rollback:<actionId>:attempt:<n>`), and inverse pre-state capture for reversible actions.
+- Added durable Spring Modulith workflow events (`IncidentActionApprovedEvent`, `IncidentVerificationRequestedEvent`, `IncidentRollbackRequestedEvent`) and `RemediationOrchestrationListener` (`@ApplicationModuleListener(propagation = Propagation.NOT_SUPPORTED)`) orchestrating execution, configurable stabilization delay (`healops.verification.stabilization-delay`), live runtime evidence recollection, `AFTER` health snapshot capture & `HealthVerificationComparator` (`BEFORE` vs `AFTER`, never treating missing/partial telemetry as healthy), `RemediationOutcomeEntity` persistence, and reversible `ROLLING_BACK` → `ROLLED_BACK` recovery with `POST_ROLLBACK` snapshots.
+- Added unit and integration tests (`InProcessPolicyEvaluatorTest`, `ActionExecutorTest`, `HealthVerificationComparatorTest`, and `RemediationWorkflowIntegrationTest`).
+
+Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 47/47 tests across all 10 test suites on 2026-11-22.
+
 ## Next milestone
 
-Implement Phase 6 policy evaluation, approval queue API (`GET /api/v1/approvals`, `POST /api/v1/approvals/{approvalId}/decisions`), safe `ActionExecutor`s, post-execution `AFTER` health verification, and rollback (`POST_ROLLBACK`).
+Implement Phase 7 persistent conversation sessions/messages, final incident reports (structured JSON + rendered Markdown), runbook draft/publish lifecycle, and remediation analytics, followed by Phase 8 SSE dashboard APIs.
 

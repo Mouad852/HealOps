@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -28,13 +29,33 @@ public class EvidenceCollectionService {
     }
 
     public List<EvidenceItemResponse> collect(UUID incidentId) {
+        return collectInternal(incidentId, Set.of(IncidentStatus.GATHERING_EVIDENCE), true);
+    }
+
+    /**
+     * Re-collects fresh live runtime evidence during {@code VERIFYING} or {@code ROLLING_BACK}
+     * without re-ingesting static alert context so post-remediation health snapshots reflect
+     * current infrastructure telemetry. External adapter calls run outside DB transactions.
+     */
+    public List<EvidenceItemResponse> collectRuntimeEvidence(UUID incidentId, Set<IncidentStatus> allowedStatuses) {
+        return collectInternal(incidentId, allowedStatuses, false);
+    }
+
+    private List<EvidenceItemResponse> collectInternal(
+            UUID incidentId,
+            Set<IncidentStatus> allowedStatuses,
+            boolean includeAlertContext
+    ) {
         IncidentResponse incident = incidentService.findById(incidentId);
-        if (incident.status() != IncidentStatus.GATHERING_EVIDENCE) {
+        if (!allowedStatuses.contains(incident.status())) {
             throw new EvidenceCollectionNotAllowedException(incident.status());
         }
 
         List<EvidenceItemResponse> collected = new ArrayList<>();
         for (EvidenceCollector collector : collectors) {
+            if (!includeAlertContext && collector instanceof AlertContextEvidenceCollector) {
+                continue;
+            }
             if (!collector.supports(incident)) {
                 continue;
             }

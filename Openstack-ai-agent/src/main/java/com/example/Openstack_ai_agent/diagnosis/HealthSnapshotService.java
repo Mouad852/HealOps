@@ -32,10 +32,41 @@ public class HealthSnapshotService {
             CorrelationService.CorrelationSummary correlation,
             DeterministicDiagnosticsEngine.DeterministicDiagnosticsResult diagnostics
     ) {
+        return captureSnapshot(HealthSnapshotPhase.BEFORE, incident, evidence, correlation, diagnostics);
+    }
+
+    @Transactional
+    public HealthSnapshotResponse captureAfterSnapshot(
+            IncidentResponse incident,
+            List<EvidenceItemResponse> evidence,
+            CorrelationService.CorrelationSummary correlation,
+            DeterministicDiagnosticsEngine.DeterministicDiagnosticsResult diagnostics
+    ) {
+        return captureSnapshot(HealthSnapshotPhase.AFTER, incident, evidence, correlation, diagnostics);
+    }
+
+    @Transactional
+    public HealthSnapshotResponse capturePostRollbackSnapshot(
+            IncidentResponse incident,
+            List<EvidenceItemResponse> evidence,
+            CorrelationService.CorrelationSummary correlation,
+            DeterministicDiagnosticsEngine.DeterministicDiagnosticsResult diagnostics
+    ) {
+        return captureSnapshot(HealthSnapshotPhase.POST_ROLLBACK, incident, evidence, correlation, diagnostics);
+    }
+
+    @Transactional
+    public HealthSnapshotResponse captureSnapshot(
+            HealthSnapshotPhase phase,
+            IncidentResponse incident,
+            List<EvidenceItemResponse> evidence,
+            CorrelationService.CorrelationSummary correlation,
+            DeterministicDiagnosticsEngine.DeterministicDiagnosticsResult diagnostics
+    ) {
         Map<String, Object> signals = buildNormalizedSignals(incident, evidence, correlation, diagnostics);
         HealthSnapshotEntity entity = HealthSnapshotEntity.of(
                 incident.id(),
-                HealthSnapshotPhase.BEFORE,
+                phase,
                 signals
         );
         return HealthSnapshotResponse.from(healthSnapshotRepository.save(entity));
