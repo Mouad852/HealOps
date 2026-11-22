@@ -35,7 +35,6 @@ public class SecurityConfiguration {
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .requestMatchers("/api/v1/incidents/webhooks/**").hasAuthority("incident:write")
                         .requestMatchers("/api/v1/**").authenticated()
-                        .requestMatchers("/AskAgent", "/api/AskAgent").authenticated()
                         .anyRequest().authenticated()
                 )
                 .httpBasic(Customizer.withDefaults())
