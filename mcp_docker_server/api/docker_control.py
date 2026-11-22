@@ -48,17 +48,23 @@ def get_stats(container_id: str):
     _validate_container_id(container_id)
     try:
         stats = get_docker_manager().get_container_stats(container_id)
+        formatted = (
+            f"Container Stats\n"
+            f"----------------------\n"
+            f"CPU total: {stats['cpu_total']} ns\n"
+            f"Memory used: {stats['memory_usage']} bytes\n"
+            f"Memory limit: {stats.get('memory_limit', 0)} bytes\n"
+        )
+        if stats.get("memory_percent") is not None:
+            formatted += f"Memory percent: {stats['memory_percent']}%\n"
+        formatted += (
+            f"Network RX: {stats['network_rx']} bytes\n"
+            f"Network TX: {stats['network_tx']} bytes\n"
+        )
         return {
             "status": "success",
             "container_id": container_id,
-            "formatted": (
-                f"Container Stats\n"
-                f"----------------------\n"
-                f"CPU total: {stats['cpu_total']} ns\n"
-                f"Memory used: {stats['memory_usage']} bytes\n"
-                f"Network RX: {stats['network_rx']} bytes\n"
-                f"Network TX: {stats['network_tx']} bytes\n"
-            ),
+            "formatted": formatted,
             "raw": stats,
         }
     except Exception as e:
@@ -119,14 +125,24 @@ def create_container(
 
 
 @router.get("/{container_id}/logs")
-def get_logs(container_id: str, tail: int = Query(default=100, ge=1, le=2000)):
+def get_logs(
+    container_id: str,
+    tail: int = Query(default=100, ge=1, le=2000),
+    since_started: bool = Query(default=False, description="Only return logs emitted since container StartedAt"),
+):
     """
     Get logs for a specific container.
     Example: GET /docker/<container_id>/logs?tail=200
     """
     _validate_container_id(container_id)
     try:
-        return {"logs": get_docker_manager().get_container_logs(container_id, tail)}
+        manager = get_docker_manager()
+        logs = (
+            manager.get_container_logs(container_id, tail, since_started=True)
+            if since_started
+            else manager.get_container_logs(container_id, tail)
+        )
+        return {"logs": logs}
     except Exception as e:
         raise _map_docker_error(e)
 
@@ -165,14 +181,18 @@ def self_heal_with_analysis():
             try:
                 stats = manager.get_container_stats(cid)
                 logs = manager.get_container_logs(cid)
-                report.append({
+                entry = {
                     "id": cid,
                     "name": name,
                     "status": c.get("status", ""),
                     "cpu": stats.get("cpu_total", 0),
                     "memory": stats.get("memory_usage", 0),
+                    "memory_limit": stats.get("memory_limit", 0),
                     "logs": logs[-500:],
-                })
+                }
+                if stats.get("memory_percent") is not None:
+                    entry["memory_percent"] = stats["memory_percent"]
+                report.append(entry)
             except Exception as e:
                 report.append({"name": name, "error": str(e)})
 

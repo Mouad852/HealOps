@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 import sys
 from pathlib import Path
@@ -8,12 +9,17 @@ import requests
 from fastapi.testclient import TestClient
 
 ADAPTER_DIR = Path(__file__).resolve().parents[1]
-if str(ADAPTER_DIR) not in sys.path:
-    sys.path.insert(0, str(ADAPTER_DIR))
-
-from api import apm_control
-from core.jaeger_manager import JaegerManager
-from main import app
+for _mod in list(sys.modules):
+    if _mod in {"api", "core", "main", "utils"} or _mod.startswith(("api.", "core.", "utils.")):
+        del sys.modules[_mod]
+sys.path.insert(0, str(ADAPTER_DIR))
+try:
+    from api import apm_control
+    from core.jaeger_manager import JaegerManager
+    from main import app
+finally:
+    if sys.path and sys.path[0] == str(ADAPTER_DIR):
+        sys.path.pop(0)
 
 SAMPLE_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
 
@@ -86,7 +92,15 @@ def test_jaeger_v3_otlp_endpoints_and_analysis(monkeypatch):
     assert traces[0]["spans"][0]["duration"] == 250000
     assert traces[0]["spans"][0]["error"] is True
     assert requested_urls[-1][0] == "http://jaeger:16686/api/v3/traces"
-    assert requested_urls[-1][1] == {"query.service_name": "demo-workload", "query.num_traces": 10}
+    trace_params = requested_urls[-1][1]
+    assert trace_params["query.service_name"] == "demo-workload"
+    assert trace_params["query.search_depth"] == 10
+    assert "query.num_traces" not in trace_params
+    assert trace_params["query.start_time_min"].endswith("Z")
+    assert trace_params["query.start_time_max"].endswith("Z")
+    start_dt = datetime.fromisoformat(trace_params["query.start_time_min"].replace("Z", "+00:00"))
+    end_dt = datetime.fromisoformat(trace_params["query.start_time_max"].replace("Z", "+00:00"))
+    assert start_dt < end_dt
 
     detail_res = client.get(f"/apm/trace/{SAMPLE_TRACE_ID}")
     assert detail_res.status_code == 200
@@ -118,3 +132,12 @@ def test_validation_not_found_and_timeout_mapping(monkeypatch):
 
     monkeypatch.setattr(requests, "get", lambda *a, **kw: (_ for _ in ()).throw(requests.Timeout("jaeger timeout")))
     assert client.get("/apm/services").status_code == 504
+
+    error_envelope = MagicMock()
+    error_envelope.status_code = 200
+    error_envelope.raise_for_status.return_value = None
+    error_envelope.text = json.dumps({"error": {"code": 3, "message": "start_time_min is required"}})
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: error_envelope)
+    err_res = client.get("/apm/traces", params={"service": "demo-workload"})
+    assert err_res.status_code == 502
+    assert "start_time_min is required" in err_res.json()["detail"]

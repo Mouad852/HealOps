@@ -4,6 +4,7 @@ from email.mime.text import MIMEText
 import os
 import re
 import smtplib
+import ssl
 from statistics import mean, stdev
 import time
 
@@ -31,6 +32,7 @@ CPU_HISTORY = {}
 MEM_HISTORY = {}
 MAX_HISTORY = 20
 CHECK_INTERVAL = 300
+DEFAULT_MEMORY_LIMIT_MB = float(os.getenv("PROMETHEUS_DEFAULT_MEMORY_LIMIT_MB", "1024"))
 
 
 def _validate_container_name(container_name: str) -> str:
@@ -89,7 +91,7 @@ def send_email_alert(container_name: str, cpu_pred: float, mem_pred: float, erro
         msg["To"] = ALERT_EMAIL_TO
         msg.attach(MIMEText(html_content, "html"))
         with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=10) as server:
-            server.starttls()
+            server.starttls(context=ssl.create_default_context())
             server.login(EMAIL_USER, EMAIL_PASS)
             server.send_message(msg)
     except Exception as e:
@@ -110,35 +112,47 @@ def detect_anomalies():
 
         cpu = to_float_safe(metrics.get("cpu_usage"))
         mem = to_float_safe(metrics.get("memory_usage"))
+
+        baseline_cpu = CPU_HISTORY.get(container, [])
+        baseline_mem = MEM_HISTORY.get(container, [])
+        if len(baseline_cpu) >= 5 and len(baseline_mem) >= 5:
+            cpu_mean = mean(baseline_cpu)
+            cpu_std = stdev(baseline_cpu) or 1.0
+            mem_mean = mean(baseline_mem)
+            mem_std = stdev(baseline_mem) or 1.0
+            if abs((cpu - cpu_mean) / cpu_std) > 3:
+                send_email_alert(container, cpu, mem, 0, 85.0, "CRITICAL")
+            if abs((mem - mem_mean) / mem_std) > 3:
+                send_email_alert(container, cpu, mem, 0, 75.0, "WARNING")
+
         CPU_HISTORY.setdefault(container, []).append(cpu)
         MEM_HISTORY.setdefault(container, []).append(mem)
         if len(CPU_HISTORY[container]) > MAX_HISTORY:
             CPU_HISTORY[container].pop(0)
         if len(MEM_HISTORY[container]) > MAX_HISTORY:
             MEM_HISTORY[container].pop(0)
-        if len(CPU_HISTORY[container]) < 5:
-            continue
-        cpu_values = CPU_HISTORY[container]
-        mem_values = MEM_HISTORY[container]
-        cpu_mean = mean(cpu_values)
-        cpu_std = stdev(cpu_values) or 1.0
-        mem_mean = mean(mem_values)
-        mem_std = stdev(mem_values) or 1.0
-        if abs((cpu - cpu_mean) / cpu_std) > 3:
-            send_email_alert(container, cpu, mem, 0, 85.0, "CRITICAL")
-        if abs((mem - mem_mean) / mem_std) > 3:
-            send_email_alert(container, cpu, mem, 0, 75.0, "WARNING")
 
 
-_scheduler_enabled = (
-    os.getenv("ENABLE_ANOMALY_SCHEDULER", "true").lower() == "true"
-    and "PYTEST_CURRENT_TEST" not in os.environ
-)
 scheduler = None
-if _scheduler_enabled and BackgroundScheduler is not None:
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(detect_anomalies, "interval", seconds=CHECK_INTERVAL)
-    scheduler.start()
+
+
+def start_scheduler():
+    global scheduler
+    scheduler_enabled = (
+        os.getenv("ENABLE_ANOMALY_SCHEDULER", "true").lower() == "true"
+        and "PYTEST_CURRENT_TEST" not in os.environ
+    )
+    if scheduler_enabled and BackgroundScheduler is not None and scheduler is None:
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(detect_anomalies, "interval", seconds=CHECK_INTERVAL)
+        scheduler.start()
+
+
+def stop_scheduler():
+    global scheduler
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
+        scheduler = None
 
 
 @router.get("/container/{container_name}")
@@ -171,7 +185,7 @@ def run_anomaly_detection_now():
 def predict_container_health(container_name: str, hours: int = Query(1, ge=1, le=24)):
     _validate_container_name(container_name)
     try:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(timezone.utc)
         past = now - timedelta(hours=hours)
 
         cpu_data = prometheus.query_range(
@@ -209,10 +223,18 @@ def predict_container_health(container_name: str, hours: int = Query(1, ge=1, le
         cpu_trend = "increasing" if cpu_pred_last > cpu_values[-1] else "stable"
         mem_trend = "increasing" if mem_pred_last > mem_values[-1] else "stable"
 
-        cpu_risk = min(cpu_pred_last / 100 * 0.6, 1.0)
-        mem_risk = min(mem_pred_last / 100 * 0.3, 1.0)
-        log_risk = min(error_count / 20 * 0.1, 1.0)
-        total_risk = (cpu_risk + mem_risk + log_risk) * 100
+        mem_limit_mb = DEFAULT_MEMORY_LIMIT_MB
+        try:
+            queried_limit = prometheus.get_container_memory_limit_mb(container_name)
+            if isinstance(queried_limit, (int, float)) and not isinstance(queried_limit, bool) and queried_limit > 0:
+                mem_limit_mb = float(queried_limit)
+        except Exception:
+            pass
+
+        cpu_risk = min(max(cpu_pred_last, 0.0) / 100.0, 1.0) * 0.6
+        mem_risk = min(max(mem_pred_last, 0.0) / mem_limit_mb, 1.0) * 0.3
+        log_risk = min(max(error_count, 0) / 20.0, 1.0) * 0.1
+        total_risk = (cpu_risk + mem_risk + log_risk) * 100.0
 
         if total_risk > 80:
             risk_level = "CRITICAL"

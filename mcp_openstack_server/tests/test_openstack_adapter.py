@@ -7,13 +7,13 @@ import pytest
 import requests
 from fastapi.testclient import TestClient
 
-ADAPTER_DIR = Path(__file__).resolve().parents[1]
-if str(ADAPTER_DIR) not in sys.path:
-    sys.path.insert(0, str(ADAPTER_DIR))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from app.api import openstack_routes
-from app.core.openstack_manager import OpenstackManager
-from app.main import app
+from mcp_openstack_server.app.api import openstack_routes
+from mcp_openstack_server.app.core.openstack_manager import OpenstackManager
+from mcp_openstack_server.app.main import app
 
 
 @pytest.fixture

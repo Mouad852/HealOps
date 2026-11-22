@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import health, k8s_routes
+from .api import health, k8s_routes
 
 app = FastAPI(title="MCP-K8s-FastAPI")
 

@@ -2,7 +2,7 @@ import subprocess
 from typing import Any, Dict, Optional
 import requests
 from fastapi import APIRouter, Body, HTTPException, Query
-from app.core.openstack_manager import OpenstackManager
+from ..core.openstack_manager import OpenstackManager
 
 router = APIRouter()
 manager: Optional[OpenstackManager] = None

@@ -1,11 +1,23 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from api.prometheus_routes import router as prometheus_router
+from api.prometheus_routes import router as prometheus_router, start_scheduler, stop_scheduler
 import uvicorn
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    start_scheduler()
+    try:
+        yield
+    finally:
+        stop_scheduler()
+
+
 app = FastAPI(
-    title="MCP Prometheus Monitor",
+    title="HealOps Prometheus Monitoring Adapter",
     version="1.0",
-    description="Middleware Control Protocol (MCP) server that provides live container metrics from Prometheus."
+    description="Bounded FastAPI adapter providing live container metrics, anomaly detection, and forecasting from Prometheus.",
+    lifespan=lifespan,
 )
 
 # Register routes

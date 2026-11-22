@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
@@ -8,6 +9,23 @@ import requests
 SERVICE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 TRACE_ID_PATTERN = re.compile(r"^[a-fA-F0-9]{16,32}$")
 DEFAULT_TIMEOUT_SECONDS = float(os.getenv("JAEGER_TIMEOUT_SECONDS", "5"))
+
+
+def _format_rfc3339_utc(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _extract_jaeger_error(doc: Dict[str, Any]) -> Optional[str]:
+    err = doc.get("error")
+    if isinstance(err, dict):
+        return str(err.get("message") or err)
+    if isinstance(err, str) and err.strip():
+        return err.strip()
+    if "code" in doc and "message" in doc and "result" not in doc and "resourceSpans" not in doc and "resource_spans" not in doc:
+        return f"{doc.get('message')} (code={doc.get('code')})"
+    return None
 
 
 def _extract_attr_value(attr_val: Dict[str, Any]) -> Any:
@@ -56,6 +74,9 @@ def parse_otlp_payload(raw_text: str) -> List[Dict[str, Any]]:
     traces_by_id: Dict[str, List[Dict[str, Any]]] = {}
 
     for doc in documents:
+        err_msg = _extract_jaeger_error(doc)
+        if err_msg:
+            raise RuntimeError(f"Jaeger v3 API error: {err_msg}")
         container = doc.get("result", doc)
         if not isinstance(container, dict):
             continue
@@ -122,18 +143,33 @@ class JaegerManager:
         res = requests.get(url, timeout=self.timeout)
         res.raise_for_status()
         payload = res.json()
+        if isinstance(payload, dict):
+            err_msg = _extract_jaeger_error(payload)
+            if err_msg:
+                raise RuntimeError(f"Jaeger v3 API error: {err_msg}")
         return list(payload.get("services") or payload.get("data") or [])
 
-    def get_traces(self, service: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_traces(
+        self,
+        service: str,
+        limit: int = 20,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        lookback_minutes: int = 60,
+    ) -> List[Dict[str, Any]]:
         if not service or not SERVICE_NAME_PATTERN.match(service):
             raise ValueError("Invalid service identifier")
         bounded_limit = max(1, min(int(limit), 100))
+        end_dt = end_time or datetime.now(timezone.utc)
+        start_dt = start_time or (end_dt - timedelta(minutes=max(1, lookback_minutes)))
         url = f"{self.base_v3}/traces"
         res = requests.get(
             url,
             params={
                 "query.service_name": service,
-                "query.num_traces": bounded_limit,
+                "query.start_time_min": _format_rfc3339_utc(start_dt),
+                "query.start_time_max": _format_rfc3339_utc(end_dt),
+                "query.search_depth": bounded_limit,
             },
             timeout=self.timeout,
         )

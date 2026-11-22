@@ -1,11 +1,25 @@
+import os
 import re
+import time
 from typing import List, Optional
 from fastapi import APIRouter, Body, HTTPException, Query
-from app.core.k8s_manager import KubernetesManager
+from pydantic import BaseModel, Field
+from ..core.k8s_manager import KubernetesManager
 
 DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 RESOURCE_NAME_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")
 PROTECTED_NAMESPACES = {"kube-system", "kube-public", "kube-node-lease"}
+ALLOWED_WORKLOAD_KINDS = {
+    "deployment": "Deployment",
+    "statefulset": "StatefulSet",
+    "daemonset": "DaemonSet",
+}
+EXEC_TIMEOUT_SECONDS = float(os.getenv("K8S_EXEC_TIMEOUT_SECONDS", "15"))
+MAX_EXEC_OUTPUT_BYTES = 65536
+
+
+class RollbackDeploymentRequest(BaseModel):
+    revision: Optional[int] = Field(default=None, ge=1, le=1000)
 
 router = APIRouter()
 manager: Optional[KubernetesManager] = None
@@ -91,18 +105,39 @@ def pod_exec(
         raise HTTPException(status_code=403, detail=f"Protected namespace '{namespace}' cannot be mutated")
     if not command:
         raise HTTPException(status_code=400, detail="Command argument list must not be empty")
+    cli = None
     try:
         cli = get_k8s_manager().exec_in_pod(namespace, pod, command)
         output = ""
+        deadline = time.monotonic() + EXEC_TIMEOUT_SECONDS
         while cli.is_open():
-            cli.update(timeout=1)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Pod exec exceeded {EXEC_TIMEOUT_SECONDS}s timeout")
+            cli.update(timeout=min(1.0, remaining))
             if cli.peek_stdout():
                 output += cli.read_stdout()
             if cli.peek_stderr():
                 output += cli.read_stderr()
+            if len(output) >= MAX_EXEC_OUTPUT_BYTES:
+                output = output[:MAX_EXEC_OUTPUT_BYTES]
+                break
             if not cli.is_open():
                 break
         return {"output": output}
+    except Exception as e:
+        raise _map_k8s_error(e)
+    finally:
+        if cli is not None:
+            cli.close()
+
+
+@router.get("/deployments/{namespace}/{deployment}")
+def get_deployment_status(namespace: str, deployment: str):
+    _validate_namespace(namespace)
+    _validate_resource_name(deployment, "deployment")
+    try:
+        return get_k8s_manager().get_deployment_status(namespace, deployment)
     except Exception as e:
         raise _map_k8s_error(e)
 
@@ -120,6 +155,40 @@ def scale_deployment(
     try:
         get_k8s_manager().scale_deployment(namespace, name, replicas)
         return {"message": "scaled", "namespace": namespace, "deployment": name, "replicas": replicas}
+    except Exception as e:
+        raise _map_k8s_error(e)
+
+
+@router.post("/workloads/{namespace}/{kind}/{workload}/restart")
+def restart_workload(namespace: str, kind: str, workload: str):
+    _validate_namespace(namespace)
+    canonical_kind = ALLOWED_WORKLOAD_KINDS.get((kind or "").strip().lower())
+    if canonical_kind is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported Kubernetes workload kind '{kind}'; allowed: Deployment, StatefulSet, DaemonSet",
+        )
+    _validate_resource_name(workload, "workload")
+    if namespace in PROTECTED_NAMESPACES:
+        raise HTTPException(status_code=403, detail=f"Protected namespace '{namespace}' cannot be mutated")
+    try:
+        return get_k8s_manager().restart_workload(namespace, canonical_kind, workload)
+    except Exception as e:
+        raise _map_k8s_error(e)
+
+
+@router.post("/deployments/{namespace}/{deployment}/rollback")
+def rollback_deployment(
+    namespace: str,
+    deployment: str,
+    payload: RollbackDeploymentRequest = Body(default_factory=RollbackDeploymentRequest),
+):
+    _validate_namespace(namespace)
+    _validate_resource_name(deployment, "deployment")
+    if namespace in PROTECTED_NAMESPACES:
+        raise HTTPException(status_code=403, detail=f"Protected namespace '{namespace}' cannot be rolled back")
+    try:
+        return get_k8s_manager().rollback_deployment(namespace, deployment, payload.revision)
     except Exception as e:
         raise _map_k8s_error(e)
 

@@ -1,9 +1,17 @@
+from datetime import datetime, timezone
 import os
 import re
+from typing import Optional
 import requests
 
 CONTAINER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 DEFAULT_TIMEOUT_SECONDS = float(os.getenv("PROMETHEUS_TIMEOUT_SECONDS", "5"))
+
+
+def _format_rfc3339_utc(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        return dt.isoformat() + "Z"
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class PrometheusClient:
@@ -26,8 +34,8 @@ class PrometheusClient:
     def get_container_metrics(self, container_name: str):
         if not container_name or not CONTAINER_NAME_PATTERN.match(container_name):
             raise ValueError("Invalid container name")
-        query_cpu = f'rate(container_cpu_usage_seconds_total{{id=~".*{container_name}.*"}}[1m])'
-        query_mem = f'container_memory_usage_bytes{{id=~".*{container_name}.*"}}'
+        query_cpu = f'rate(container_cpu_usage_seconds_total{{name="{container_name}"}}[1m])'
+        query_mem = f'container_memory_usage_bytes{{name="{container_name}"}}'
 
         cpu_result = self._query(query_cpu)
         mem_result = self._query(query_mem)
@@ -41,6 +49,21 @@ class PrometheusClient:
             "memory_usage": f"{int(float(mem)) / 1e6:.2f} MB" if mem != "N/A" else "N/A",
         }
 
+    def get_container_memory_limit_mb(self, container_name: str) -> Optional[float]:
+        if not container_name or not CONTAINER_NAME_PATTERN.match(container_name):
+            raise ValueError("Invalid container name")
+        query = f'container_spec_memory_limit_bytes{{name="{container_name}"}}'
+        result = self._query(query)
+        if not result:
+            return None
+        try:
+            limit_bytes = float(result[0]["value"][1])
+            if limit_bytes <= 0:
+                return None
+            return limit_bytes / (1024 * 1024)
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+
     def list_containers(self):
         query = "container_last_seen"
         result = self._query(query)
@@ -52,8 +75,8 @@ class PrometheusClient:
         url = f"{self.base_url}/api/v1/query_range"
         params = {
             "query": query,
-            "start": start.isoformat() + "Z",
-            "end": end.isoformat() + "Z",
+            "start": _format_rfc3339_utc(start),
+            "end": _format_rfc3339_utc(end),
             "step": step,
         }
         response = requests.get(url, params=params, timeout=self.timeout)
