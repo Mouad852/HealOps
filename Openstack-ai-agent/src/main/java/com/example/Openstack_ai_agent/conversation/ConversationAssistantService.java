@@ -1,11 +1,15 @@
 package com.example.Openstack_ai_agent.conversation;
 
+import com.example.Openstack_ai_agent.diagnosis.LlmDiagnosisService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -20,10 +24,11 @@ import java.util.UUID;
  */
 @Service
 public class ConversationAssistantService {
+    private static final Logger log = LoggerFactory.getLogger(ConversationAssistantService.class);
     private static final String SYSTEM_PROMPT = """
             You are HealOps Incident Autopilot's operations assistant.
-            Respond concisely using only the provided bounded, redacted conversation context and
-            incident/evidence/execution references.
+            Respond concisely using only the provided bounded, redacted conversation context,
+            read-only operational tool results, and incident/evidence/execution references.
             Strict rules:
             1. Never repeat secrets, credentials, or raw unbounded logs.
             2. Never emit executable shell commands or claim to bypass operator approval/policy.
@@ -33,17 +38,24 @@ public class ConversationAssistantService {
     private final ChatClient chatClient;
     private final ChatMemory chatMemory;
     private final ConversationSanitizer sanitizer;
+    private final CopilotToolQueryService copilotToolQueryService;
     private final boolean llmEnabled;
+    private final String apiKey;
 
+    @Autowired
     public ConversationAssistantService(
             ChatClient.Builder chatClientBuilder,
             ChatMemory chatMemory,
             ConversationSanitizer sanitizer,
-            @Value("${healops.conversation.llm-enabled:false}") boolean llmEnabled
+            CopilotToolQueryService copilotToolQueryService,
+            @Value("${healops.conversation.llm-enabled:false}") boolean llmEnabled,
+            @Value("${spring.ai.openai.api-key:}") String apiKey
     ) {
         this.chatMemory = chatMemory;
         this.sanitizer = sanitizer;
+        this.copilotToolQueryService = copilotToolQueryService;
         this.llmEnabled = llmEnabled;
+        this.apiKey = apiKey;
         this.chatClient = chatClientBuilder
                 .clone()
                 .defaultSystem(SYSTEM_PROMPT)
@@ -57,6 +69,8 @@ public class ConversationAssistantService {
         UUID sessionId = context.session().id();
         String conversationId = sessionId.toString();
         String userText = sanitizer.sanitizeContent(context.userMessage().content());
+
+        hydrateMemoryIfEmpty(conversationId, context);
 
         List<ConversationPersistenceService.GeneratedMessage> messages = new ArrayList<>();
         ConversationPersistenceService.IncidentReferenceSummary ref = context.incidentRef();
@@ -96,18 +110,25 @@ public class ConversationAssistantService {
         }
 
         String assistantReply;
-        if (llmEnabled) {
-            String boundedPrompt = buildBoundedPrompt(context, userText);
-            String rawReply = chatClient.prompt()
-                    .user(boundedPrompt)
-                    .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, conversationId))
-                    .call()
-                    .content();
-            assistantReply = sanitizer.sanitizeContent(
-                    rawReply == null || rawReply.isBlank()
-                            ? "Acknowledged request in session " + conversationId
-                            : rawReply
-            );
+        if (llmEnabled && LlmDiagnosisService.isUsableApiKey(apiKey)) {
+            try {
+                String boundedPrompt = buildBoundedPrompt(context, userText);
+                String rawReply = chatClient.prompt()
+                        .user(boundedPrompt)
+                        .tools(copilotToolQueryService.scopedTools(context.session().environmentId()))
+                        .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, conversationId))
+                        .call()
+                        .content();
+                assistantReply = sanitizer.sanitizeContent(
+                        rawReply == null || rawReply.isBlank()
+                                ? "Acknowledged request in session " + conversationId
+                                : rawReply
+                );
+            } catch (RuntimeException exception) {
+                log.warn("LLM conversation reply unavailable for session {}: {}. Falling back to deterministic assistant.",
+                        conversationId, exception.getMessage());
+                assistantReply = generateDeterministicReply(conversationId, context, userText);
+            }
         } else {
             assistantReply = generateDeterministicReply(conversationId, context, userText);
         }
@@ -121,6 +142,35 @@ public class ConversationAssistantService {
         ));
 
         return List.copyOf(messages);
+    }
+
+    /**
+     * Hydrates Spring AI {@link ChatMemory} from PostgreSQL-persisted {@code recentHistory}
+     * when in-memory chat history is empty (e.g. after control-plane restart), excluding the
+     * current triggering user message so it is never duplicated.
+     */
+    void hydrateMemoryIfEmpty(
+            String conversationId,
+            ConversationPersistenceService.ConversationTurnContext context
+    ) {
+        if (!chatMemory.get(conversationId).isEmpty() || context.recentHistory() == null) {
+            return;
+        }
+        UUID currentUserMsgId = context.userMessage().id();
+        for (ConversationMessageResponse historical : context.recentHistory()) {
+            if (historical.id().equals(currentUserMsgId)) {
+                continue;
+            }
+            String safeContent = sanitizer.sanitizeContent(historical.content());
+            if (safeContent.isBlank()) {
+                continue;
+            }
+            if (historical.role() == ConversationMessageRole.USER) {
+                chatMemory.add(conversationId, new UserMessage(safeContent));
+            } else if (historical.role() == ConversationMessageRole.ASSISTANT) {
+                chatMemory.add(conversationId, new AssistantMessage(safeContent));
+            }
+        }
     }
 
     private String generateDeterministicReply(

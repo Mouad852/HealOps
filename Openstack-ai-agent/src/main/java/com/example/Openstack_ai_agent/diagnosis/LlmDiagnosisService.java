@@ -4,10 +4,12 @@ import com.example.Openstack_ai_agent.evidence.CorrelationService;
 import com.example.Openstack_ai_agent.evidence.EvidenceItemResponse;
 import com.example.Openstack_ai_agent.incident.IncidentResponse;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
@@ -46,19 +48,42 @@ public class LlmDiagnosisService {
     private final ChatClient chatClient;
     private final boolean llmEnabled;
     private final String modelName;
+    private final String apiKey;
 
     public LlmDiagnosisService(
             ChatClient chatClient,
+            boolean llmEnabled,
+            String modelName
+    ) {
+        this(chatClient, llmEnabled, modelName, "unit-test-key");
+    }
+
+    @Autowired
+    public LlmDiagnosisService(
+            ChatClient chatClient,
             @Value("${healops.diagnosis.llm-enabled:false}") boolean llmEnabled,
-            @Value("${spring.ai.openai.chat.options.model:gemini-3.5-flash-lite}") String modelName
+            @Value("${spring.ai.openai.chat.options.model:gemini-2.5-flash-lite}") String modelName,
+            @Value("${spring.ai.openai.api-key:}") String apiKey
     ) {
         this.chatClient = chatClient;
         this.llmEnabled = llmEnabled;
         this.modelName = modelName;
+        this.apiKey = apiKey;
     }
 
     public boolean isEnabled() {
-        return llmEnabled;
+        return llmEnabled && isUsableApiKey(apiKey);
+    }
+
+    public static boolean isUsableApiKey(String rawKey) {
+        if (rawKey == null || rawKey.isBlank()) {
+            return false;
+        }
+        String normalized = rawKey.trim().toLowerCase(Locale.ROOT);
+        return !normalized.equals("test-key")
+                && !normalized.equals("not-configured")
+                && !normalized.startsWith("replace_")
+                && !normalized.contains("replace_with");
     }
 
     public String modelVersion() {
