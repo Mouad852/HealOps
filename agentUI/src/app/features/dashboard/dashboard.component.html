@@ -218,6 +218,18 @@
                 Read-only viewer role: creating manual alerts requires <code>incident:write</code> authority.
               </p>
             } @else {
+              @if (envStore.selectedEnvironmentId() === 'demo') {
+                <div class="d-flex justify-content-between align-items-center mb-2 pb-2 border-bottom border-secondary-subtle">
+                  <span class="small text-secondary">Demo Sandbox quick fill:</span>
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-outline-info"
+                    (click)="applyDemoWorkloadPreset()"
+                  >
+                    <i class="bi bi-lightning-charge me-1" aria-hidden="true"></i>Load demo-workload preset
+                  </button>
+                </div>
+              }
               <form class="d-flex flex-column gap-2" (ngSubmit)="submitDemoAlert()">
                 <div class="row g-2">
                   <div class="col-sm-7">

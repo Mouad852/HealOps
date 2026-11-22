@@ -3,6 +3,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   DestroyRef,
+  SecurityContext,
   computed,
   effect,
   inject,
@@ -11,7 +12,9 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
+import { DomSanitizer } from '@angular/platform-browser';
 import { Router, RouterLink } from '@angular/router';
+import { marked } from 'marked';
 import { firstValueFrom } from 'rxjs';
 import {
   DiagnosisResponse,
@@ -429,7 +432,7 @@ import { ToolProgressComponent } from '../../shared/tool-progress/tool-progress.
                     <time [attr.datetime]="rep.generatedAt">{{ rep.generatedAt | date: 'medium' }}</time>
                   </div>
                   @if (reportView() === 'markdown') {
-                    <pre class="healops-pre mb-0">{{ rep.renderedMarkdown }}</pre>
+                    <div class="healops-markdown small text-light" [innerHTML]="renderedReportHtml()"></div>
                   } @else {
                     <pre class="healops-pre mb-0">{{ rep.structuredReport | json }}</pre>
                   }
@@ -491,6 +494,7 @@ export class IncidentDetailComponent {
   private readonly api = inject(HealopsApiClient);
   private readonly sse = inject(DashboardEventsService);
   private readonly router = inject(Router);
+  private readonly sanitizer = inject(DomSanitizer);
   private readonly destroyRef = inject(DestroyRef);
 
   readonly evidenceTypes: readonly EvidenceType[] = [
@@ -552,6 +556,15 @@ export class IncidentDetailComponent {
     return TERMINAL_INCIDENT_STATUSES.has(inc.status)
       ? 'Generating or loading final incident report...'
       : `Final report is automatically generated once the incident reaches a terminal state (current: ${inc.status}).`;
+  });
+
+  readonly renderedReportHtml = computed(() => {
+    const markdown = this.report()?.renderedMarkdown ?? '';
+    if (!markdown.trim()) {
+      return '';
+    }
+    const parsedHtml = marked.parse(markdown, { async: false });
+    return this.sanitizer.sanitize(SecurityContext.HTML, parsedHtml) ?? '';
   });
 
   constructor() {

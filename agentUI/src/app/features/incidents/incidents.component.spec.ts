@@ -4,6 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { apiInterceptor } from '../../core/api/api.interceptor';
 import { IncidentResponse } from '../../core/api/api.models';
+import { DashboardEventsService } from '../../core/events/dashboard-events.service';
 import { EVENT_SOURCE_FACTORY } from '../../core/events/event-source.token';
 import { createFakeEventSourceController } from '../../testing/fake-event-source';
 import { IncidentsComponent } from './incidents.component';
@@ -29,10 +30,12 @@ function makeIncident(id: string, service: string): IncidentResponse {
 
 describe('IncidentsComponent', () => {
   let httpMock: HttpTestingController;
+  let sseController: ReturnType<typeof createFakeEventSourceController>;
+  let sseService: DashboardEventsService;
 
   beforeEach(async () => {
     localStorage.removeItem('healops.selectedEnvironmentId');
-    const sseController = createFakeEventSourceController();
+    sseController = createFakeEventSourceController();
 
     await TestBed.configureTestingModule({
       imports: [IncidentsComponent],
@@ -45,9 +48,13 @@ describe('IncidentsComponent', () => {
     }).compileComponents();
 
     httpMock = TestBed.inject(HttpTestingController);
+    sseService = TestBed.inject(DashboardEventsService);
+    sseService.connect('local');
+    sseController.latest()?.emitOpen();
   });
 
   afterEach(() => {
+    sseService.ngOnDestroy();
     httpMock.verify();
   });
 
@@ -75,6 +82,34 @@ describe('IncidentsComponent', () => {
     fixture.detectChanges();
 
     expect(comp.incidents().length).toBe(2);
+    expect(comp.nextCursor()).toBeNull();
+
+    // SSE incident.updated refreshes page 1 without wiping out page 2 items or resetting nextCursor
+    sseController.latest()?.emitNamedEvent('incident.updated', {
+      schemaVersion: 'v1',
+      id: 'ev-inc-1',
+      sequenceNumber: 21,
+      type: 'incident.updated',
+      occurredAt: '2026-11-22T12:02:00Z',
+      environmentId: 'local',
+      incidentId: 'inc-1',
+      traceId: null,
+      entityVersion: 3,
+      payload: { status: 'CLOSED' },
+    });
+
+    httpMock
+      .expectOne('/api/v1/incidents/page?environmentId=local&limit=20')
+      .flush({
+        items: [{ ...makeIncident('inc-1', 'checkout-api'), status: 'CLOSED', version: 3 }],
+        nextCursor: 'cursor-page-2',
+      });
+
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(comp.incidents().map((i) => i.id)).toEqual(['inc-1', 'inc-2']);
+    expect(comp.incidents()[0].status).toBe('CLOSED');
     expect(comp.nextCursor()).toBeNull();
   });
 

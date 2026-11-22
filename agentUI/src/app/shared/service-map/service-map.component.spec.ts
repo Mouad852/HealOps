@@ -70,6 +70,11 @@ describe('ServiceMapComponent', () => {
     svcButton?.click();
 
     expect(selected).toEqual(['checkout-api']);
+
+    // Special characters in selectedService must not crash Cytoscape selector filtering
+    fixture.componentRef.setInput('selectedService', 'svc[0]"special:char\\test');
+    expect(() => fixture.detectChanges()).not.toThrow();
+
     expect(() => fixture.destroy()).not.toThrow();
   });
 });

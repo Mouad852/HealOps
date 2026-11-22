@@ -117,4 +117,65 @@ describe('RunbooksComponent', () => {
     expect(fixture.componentInstance.selectedRunbook()?.status).toBe('PUBLISHED');
     expect((fixture.nativeElement as HTMLElement).textContent).toContain('Published by operator');
   });
+
+  it('uses container key in defaultStep and preserves all arguments for multi-argument actions', async () => {
+    authStore.setUserForTesting({
+      username: 'operator',
+      authorities: ['ROLE_OPERATOR', 'incident:read', 'incident:write', 'env:local'],
+    });
+
+    const scaleRunbook: RunbookDetailResponse = {
+      ...DRAFT_RUNBOOK,
+      id: 'rb-scale',
+      name: 'Scale checkout deployment',
+      latestVersion: {
+        ...DRAFT_RUNBOOK.latestVersion!,
+        runbookId: 'rb-scale',
+        typedSteps: [
+          {
+            order: 1,
+            actionType: 'SCALE_K8S_DEPLOYMENT',
+            arguments: { namespace: 'payments', deployment: 'checkout-api', replicas: 4 },
+            description: 'Scale deployment up',
+            commandPreview: 'kubectl scale deployment/checkout-api --replicas=4 -n payments',
+            riskLevel: 'MEDIUM',
+            rollbackStrategy: 'RESTORE_PREVIOUS_REPLICAS',
+          },
+        ],
+      },
+    };
+
+    const fixture = TestBed.createComponent(RunbooksComponent);
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/v1/runbooks').flush([scaleRunbook]);
+    httpMock
+      .expectOne('/api/v1/incidents/page?environmentId=local&status=CLOSED&limit=20')
+      .flush({ items: [], nextCursor: null });
+
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const comp = fixture.componentInstance;
+    const defaultRestart = comp.defaultStep();
+    expect(defaultRestart.actionType).toBe('RESTART_CONTAINER');
+    expect(defaultRestart.args.map((a) => a.key)).toEqual(['container']);
+
+    // Edit replicas from 4 to 5 and verify all 3 arguments (namespace, deployment, replicas) are preserved
+    comp.updateStepArg(0, 2, 'value', '5');
+    const savePromise = comp.saveDraft(scaleRunbook);
+    const putReq = httpMock.expectOne('/api/v1/runbooks/rb-scale');
+    expect(putReq.request.method).toBe('PUT');
+    const payload = putReq.request.body as {
+      typedSteps: { actionType: string; arguments: Record<string, unknown> }[];
+    };
+    expect(payload.typedSteps[0].actionType).toBe('SCALE_K8S_DEPLOYMENT');
+    expect(payload.typedSteps[0].arguments).toEqual({
+      namespace: 'payments',
+      deployment: 'checkout-api',
+      replicas: 5,
+    });
+    putReq.flush({ ...scaleRunbook, currentVersion: 2 });
+    await savePromise;
+  });
 });

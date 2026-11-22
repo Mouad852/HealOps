@@ -211,7 +211,16 @@ export class ChatComponent {
   readonly sending = signal<boolean>(false);
   readonly error = signal<string | null>(null);
 
+  static readonly POLL_INTERVAL_MS = 2500;
+  static readonly POLL_TIMEOUT_MS = 30000;
+
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollStartedAt = 0;
+  private baselineMessageCount = 0;
+
   constructor() {
+    this.destroyRef.onDestroy(() => this.clearAssistantPollTimer());
+
     this.route.queryParamMap
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((params) => {
@@ -224,6 +233,7 @@ export class ChatComponent {
     effect(() => {
       const envId = this.envStore.selectedEnvironmentId();
       if (envId) {
+        this.clearAssistantPollTimer();
         this.activeSession.set(null);
         this.streamingReply.set('');
         this.awaitingAssistant.set(false);
@@ -243,10 +253,10 @@ export class ChatComponent {
         if (envelope.type === 'conversation.token') {
           const token = envelope.payload['token'];
           if (typeof token === 'string') {
-            this.awaitingAssistant.set(false);
             this.streamingReply.update((prev) => prev + token);
           }
         } else if (envelope.type === 'conversation.completed') {
+          this.clearAssistantPollTimer();
           this.streamingReply.set('');
           this.awaitingAssistant.set(false);
           void this.selectSession(current.id);
@@ -296,6 +306,9 @@ export class ChatComponent {
   }
 
   async selectSession(sessionId: string): Promise<void> {
+    this.clearAssistantPollTimer();
+    this.awaitingAssistant.set(false);
+    this.streamingReply.set('');
     this.error.set(null);
     try {
       const detail = await firstValueFrom(this.api.getConversation(sessionId));
@@ -354,11 +367,69 @@ export class ChatComponent {
           messages: [...detail.messages, appended],
         };
       });
+
+      this.baselineMessageCount = this.activeSession()?.messages.length ?? 0;
+      this.startAssistantPollFallback(sessionId);
     } catch (err: unknown) {
       this.error.set(toApiErrorMessage(err, 'Unable to post message.'));
       this.awaitingAssistant.set(false);
+      this.clearAssistantPollTimer();
     } finally {
       this.sending.set(false);
+    }
+  }
+
+  private startAssistantPollFallback(sessionId: string): void {
+    this.clearAssistantPollTimer();
+    this.pollStartedAt = Date.now();
+    this.scheduleAssistantPoll(sessionId);
+  }
+
+  private scheduleAssistantPoll(sessionId: string): void {
+    this.pollTimer = setTimeout(() => {
+      void this.pollForAssistantCompletion(sessionId);
+    }, ChatComponent.POLL_INTERVAL_MS);
+  }
+
+  private async pollForAssistantCompletion(sessionId: string): Promise<void> {
+    if (!this.awaitingAssistant() || this.activeSession()?.id !== sessionId) {
+      this.clearAssistantPollTimer();
+      return;
+    }
+    try {
+      const detail = await firstValueFrom(this.api.getConversation(sessionId));
+      const newMessages = detail.messages.slice(this.baselineMessageCount);
+      const completed = newMessages.some(
+        (m) => m.role === 'ASSISTANT' || m.role === 'ERROR'
+      );
+      if (completed) {
+        this.activeSession.set(detail);
+        this.streamingReply.set('');
+        this.awaitingAssistant.set(false);
+        this.clearAssistantPollTimer();
+        return;
+      }
+    } catch {
+      // Transient poll failure; continue until timeout
+    }
+
+    if (Date.now() - this.pollStartedAt >= ChatComponent.POLL_TIMEOUT_MS) {
+      this.awaitingAssistant.set(false);
+      this.streamingReply.set('');
+      this.clearAssistantPollTimer();
+      this.error.set('Timed out waiting for assistant reply; select the session again to refresh.');
+      return;
+    }
+
+    if (this.awaitingAssistant() && this.activeSession()?.id === sessionId) {
+      this.scheduleAssistantPoll(sessionId);
+    }
+  }
+
+  private clearAssistantPollTimer(): void {
+    if (this.pollTimer !== null) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
     }
   }
 

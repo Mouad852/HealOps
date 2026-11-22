@@ -83,6 +83,7 @@ export class DashboardComponent {
     const containerName = this.alertContainer().trim();
     if (containerName) {
       labels['container'] = containerName;
+      labels['runtime'] = 'docker';
     }
 
     const request: CreateIncidentRequest = {
@@ -107,6 +108,16 @@ export class DashboardComponent {
     } finally {
       this.submittingAlert.set(false);
     }
+  }
+
+  applyDemoWorkloadPreset(): void {
+    this.alertService.set('demo-workload');
+    this.alertSeverity.set('HIGH');
+    this.alertSource.set('manual-demo');
+    this.alertContainer.set('healops-demo-workload');
+    this.alertSummary.set('Demo workload fault injected: elevated error rate and latency');
+    this.alertError.set(null);
+    this.alertCreatedId.set(null);
   }
 
   openCreatedIncident(): void {

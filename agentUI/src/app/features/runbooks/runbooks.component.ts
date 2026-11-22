@@ -24,14 +24,42 @@ import { AuthStore } from '../../core/state/auth.store';
 import { EnvironmentStore } from '../../core/state/environment.store';
 import { StatusBadgeComponent } from '../../shared/status-badge/status-badge.component';
 
+interface EditableArg {
+  key: string;
+  value: string;
+}
+
 interface EditableStep {
   actionType: ActionType;
-  targetArgKey: string;
-  targetArgValue: string;
-  extraArgKey: string;
-  extraArgValue: string;
+  args: readonly EditableArg[];
   description: string;
 }
+
+const ACTION_ARG_TEMPLATES: Record<ActionType, readonly EditableArg[]> = {
+  RESTART_CONTAINER: [{ key: 'container', value: '' }],
+  RESTART_K8S_WORKLOAD: [
+    { key: 'namespace', value: '' },
+    { key: 'workload', value: '' },
+    { key: 'kind', value: 'Deployment' },
+  ],
+  SCALE_K8S_DEPLOYMENT: [
+    { key: 'namespace', value: '' },
+    { key: 'deployment', value: '' },
+    { key: 'replicas', value: '2' },
+  ],
+  ROLLBACK_K8S_DEPLOYMENT: [
+    { key: 'namespace', value: '' },
+    { key: 'deployment', value: '' },
+    { key: 'revision', value: '' },
+  ],
+  RESTART_OPENSTACK_SERVICE: [
+    { key: 'node', value: '' },
+    { key: 'service', value: '' },
+  ],
+  NO_ACTION: [{ key: 'reason', value: '' }],
+};
+
+const INTEGER_ARG_KEYS = new Set(['replicas', 'revision']);
 
 @Component({
   selector: 'app-runbooks',
@@ -227,70 +255,104 @@ interface EditableStep {
                   </div>
 
                   <div class="d-flex flex-column gap-2">
-                    @for (step of editableSteps(); track $index) {
+                    @for (step of editableSteps(); track $index; let stepIdx = $index) {
                       <div class="p-3 rounded border border-secondary-subtle bg-dark d-flex flex-column gap-2">
                         <div class="d-flex justify-content-between align-items-center">
-                          <span class="badge text-bg-secondary">Step {{ $index + 1 }}</span>
+                          <span class="badge text-bg-secondary">Step {{ stepIdx + 1 }}</span>
                           @if (authStore.canWrite() && editableSteps().length > 1) {
                             <button
                               type="button"
                               class="btn btn-sm btn-outline-danger py-0"
-                              (click)="removeStep($index)"
+                              (click)="removeStep(stepIdx)"
                             >
                               Remove
                             </button>
                           }
                         </div>
 
-                        <div class="row g-2">
-                          <div class="col-md-4">
-                            <label [attr.for]="'stepAction-' + $index" class="form-label small text-secondary mb-1">Action Type</label>
-                            <select
-                              [id]="'stepAction-' + $index"
-                              class="form-select form-select-sm bg-dark text-white border-secondary"
-                              [ngModel]="step.actionType"
-                              (ngModelChange)="updateStepField($index, 'actionType', $event)"
-                              [disabled]="!authStore.canWrite()"
-                            >
-                              @for (action of actionTypes; track action) {
-                                <option [value]="action">{{ action }}</option>
+                        <div>
+                          <label [attr.for]="'stepAction-' + stepIdx" class="form-label small text-secondary mb-1">Action Type</label>
+                          <select
+                            [id]="'stepAction-' + stepIdx"
+                            class="form-select form-select-sm bg-dark text-white border-secondary"
+                            [ngModel]="step.actionType"
+                            (ngModelChange)="updateStepActionType(stepIdx, $event)"
+                            [disabled]="!authStore.canWrite()"
+                          >
+                            @for (action of actionTypes; track action) {
+                              <option [value]="action">{{ action }}</option>
+                            }
+                          </select>
+                        </div>
+
+                        <div class="d-flex flex-column gap-2">
+                          <div class="d-flex justify-content-between align-items-center">
+                            <span class="small text-secondary">Typed Arguments</span>
+                            @if (authStore.canWrite()) {
+                              <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary py-0"
+                                (click)="addStepArg(stepIdx)"
+                              >
+                                <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add Arg
+                              </button>
+                            }
+                          </div>
+
+                          @for (arg of step.args; track $index; let argIdx = $index) {
+                            <div class="row g-2 align-items-center">
+                              <div class="col-5">
+                                <label [attr.for]="'stepArgKey-' + stepIdx + '-' + argIdx" class="visually-hidden">
+                                  Argument Key {{ argIdx + 1 }}
+                                </label>
+                                <input
+                                  [id]="'stepArgKey-' + stepIdx + '-' + argIdx"
+                                  type="text"
+                                  class="form-control form-control-sm bg-dark text-white border-secondary font-monospace"
+                                  [ngModel]="arg.key"
+                                  (ngModelChange)="updateStepArg(stepIdx, argIdx, 'key', $event)"
+                                  placeholder="e.g. container / namespace"
+                                  [disabled]="!authStore.canWrite()"
+                                />
+                              </div>
+                              <div class="col">
+                                <label [attr.for]="'stepArgVal-' + stepIdx + '-' + argIdx" class="visually-hidden">
+                                  Argument Value {{ argIdx + 1 }}
+                                </label>
+                                <input
+                                  [id]="'stepArgVal-' + stepIdx + '-' + argIdx"
+                                  type="text"
+                                  class="form-control form-control-sm bg-dark text-white border-secondary font-monospace"
+                                  [ngModel]="arg.value"
+                                  (ngModelChange)="updateStepArg(stepIdx, argIdx, 'value', $event)"
+                                  placeholder="Argument value"
+                                  [disabled]="!authStore.canWrite()"
+                                />
+                              </div>
+                              @if (authStore.canWrite() && step.args.length > 1) {
+                                <div class="col-auto">
+                                  <button
+                                    type="button"
+                                    class="btn btn-sm btn-outline-danger py-0"
+                                    [attr.aria-label]="'Remove argument ' + (arg.key || argIdx + 1)"
+                                    (click)="removeStepArg(stepIdx, argIdx)"
+                                  >
+                                    <i class="bi bi-x-lg" aria-hidden="true"></i>
+                                  </button>
+                                </div>
                               }
-                            </select>
-                          </div>
-                          <div class="col-md-4">
-                            <label [attr.for]="'stepKey-' + $index" class="form-label small text-secondary mb-1">Primary Arg Key</label>
-                            <input
-                              [id]="'stepKey-' + $index"
-                              type="text"
-                              class="form-control form-control-sm bg-dark text-white border-secondary font-monospace"
-                              [ngModel]="step.targetArgKey"
-                              (ngModelChange)="updateStepField($index, 'targetArgKey', $event)"
-                              placeholder="e.g. containerName / deployment"
-                              [disabled]="!authStore.canWrite()"
-                            />
-                          </div>
-                          <div class="col-md-4">
-                            <label [attr.for]="'stepVal-' + $index" class="form-label small text-secondary mb-1">Primary Arg Value</label>
-                            <input
-                              [id]="'stepVal-' + $index"
-                              type="text"
-                              class="form-control form-control-sm bg-dark text-white border-secondary font-monospace"
-                              [ngModel]="step.targetArgValue"
-                              (ngModelChange)="updateStepField($index, 'targetArgValue', $event)"
-                              placeholder="e.g. checkout-api"
-                              [disabled]="!authStore.canWrite()"
-                            />
-                          </div>
+                            </div>
+                          }
                         </div>
 
                         <div>
-                          <label [attr.for]="'stepDesc-' + $index" class="form-label small text-secondary mb-1">Description</label>
+                          <label [attr.for]="'stepDesc-' + stepIdx" class="form-label small text-secondary mb-1">Description</label>
                           <input
-                            [id]="'stepDesc-' + $index"
+                            [id]="'stepDesc-' + stepIdx"
                             type="text"
                             class="form-control form-control-sm bg-dark text-white border-secondary"
                             [ngModel]="step.description"
-                            (ngModelChange)="updateStepField($index, 'description', $event)"
+                            (ngModelChange)="updateStepDescription(stepIdx, $event)"
                             [disabled]="!authStore.canWrite()"
                           />
                         </div>
@@ -407,13 +469,13 @@ export class RunbooksComponent {
     }
     this.editableSteps.set(
       steps.map((step) => {
-        const entries = Object.entries(step.arguments);
+        const entries = Object.entries(step.arguments).map(([key, value]) => ({
+          key,
+          value: value !== undefined && value !== null ? String(value) : '',
+        }));
         return {
           actionType: step.actionType,
-          targetArgKey: entries[0]?.[0] ?? 'containerName',
-          targetArgValue: entries[0]?.[1] !== undefined ? String(entries[0][1]) : '',
-          extraArgKey: entries[1]?.[0] ?? '',
-          extraArgValue: entries[1]?.[1] !== undefined ? String(entries[1][1]) : '',
+          args: entries.length > 0 ? entries : this.defaultArgsFor(step.actionType),
           description: step.description ?? '',
         };
       })
@@ -428,9 +490,55 @@ export class RunbooksComponent {
     this.editableSteps.update((list) => list.filter((_, i) => i !== index));
   }
 
-  updateStepField<K extends keyof EditableStep>(index: number, field: K, value: EditableStep[K]): void {
+  updateStepActionType(index: number, actionType: ActionType): void {
     this.editableSteps.update((list) =>
-      list.map((step, i) => (i === index ? { ...step, [field]: value } : step))
+      list.map((step, i) => {
+        if (i !== index) {
+          return step;
+        }
+        const existingByKey = new Map(step.args.map((a) => [a.key.trim(), a.value]));
+        const nextArgs = this.defaultArgsFor(actionType).map((templateArg) => ({
+          key: templateArg.key,
+          value: existingByKey.get(templateArg.key) ?? templateArg.value,
+        }));
+        return { ...step, actionType, args: nextArgs };
+      })
+    );
+  }
+
+  updateStepDescription(index: number, description: string): void {
+    this.editableSteps.update((list) =>
+      list.map((step, i) => (i === index ? { ...step, description } : step))
+    );
+  }
+
+  addStepArg(stepIndex: number): void {
+    this.editableSteps.update((list) =>
+      list.map((step, i) =>
+        i === stepIndex ? { ...step, args: [...step.args, { key: '', value: '' }] } : step
+      )
+    );
+  }
+
+  removeStepArg(stepIndex: number, argIndex: number): void {
+    this.editableSteps.update((list) =>
+      list.map((step, i) =>
+        i === stepIndex ? { ...step, args: step.args.filter((_, ai) => ai !== argIndex) } : step
+      )
+    );
+  }
+
+  updateStepArg(stepIndex: number, argIndex: number, field: keyof EditableArg, value: string): void {
+    this.editableSteps.update((list) =>
+      list.map((step, i) => {
+        if (i !== stepIndex) {
+          return step;
+        }
+        return {
+          ...step,
+          args: step.args.map((arg, ai) => (ai === argIndex ? { ...arg, [field]: value } : arg)),
+        };
+      })
     );
   }
 
@@ -469,11 +577,17 @@ export class RunbooksComponent {
 
     const typedSteps: RunbookStepRequest[] = this.editableSteps().map((step) => {
       const args: Record<string, unknown> = {};
-      if (step.targetArgKey.trim() && step.targetArgValue.trim()) {
-        args[step.targetArgKey.trim()] = step.targetArgValue.trim();
-      }
-      if (step.extraArgKey.trim() && step.extraArgValue.trim()) {
-        args[step.extraArgKey.trim()] = step.extraArgValue.trim();
+      for (const arg of step.args) {
+        const key = arg.key.trim();
+        const rawValue = arg.value.trim();
+        if (!key || !rawValue) {
+          continue;
+        }
+        if (INTEGER_ARG_KEYS.has(key) && /^-?\d+$/.test(rawValue)) {
+          args[key] = Number.parseInt(rawValue, 10);
+        } else {
+          args[key] = rawValue;
+        }
       }
       return {
         actionType: step.actionType,
@@ -528,15 +642,16 @@ export class RunbooksComponent {
     );
   }
 
-  private defaultStep(): EditableStep {
+  defaultStep(actionType: ActionType = 'RESTART_CONTAINER'): EditableStep {
     return {
-      actionType: 'RESTART_CONTAINER',
-      targetArgKey: 'containerName',
-      targetArgValue: '',
-      extraArgKey: '',
-      extraArgValue: '',
+      actionType,
+      args: this.defaultArgsFor(actionType),
       description: 'Restart degraded target container',
     };
+  }
+
+  private defaultArgsFor(actionType: ActionType): readonly EditableArg[] {
+    return ACTION_ARG_TEMPLATES[actionType].map((arg) => ({ ...arg }));
   }
 
   private async loadRunbooks(status: RunbookStatus | ''): Promise<void> {

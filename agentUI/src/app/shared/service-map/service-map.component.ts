@@ -183,12 +183,7 @@ export class ServiceMapComponent implements AfterViewInit, OnDestroy {
 
     effect(() => {
       const selected = this.selectedService();
-      if (this.cy) {
-        this.cy.nodes().removeClass('selected-service');
-        if (selected) {
-          this.cy.nodes(`[service = "${selected.replace(/"/g, '')}"]`).addClass('selected-service');
-        }
-      }
+      this.highlightSelectedService(selected);
     });
   }
 
@@ -341,9 +336,19 @@ export class ServiceMapComponent implements AfterViewInit, OnDestroy {
       }
     });
 
-    const selected = this.selectedService();
+    this.highlightSelectedService(this.selectedService());
+  }
+
+  private highlightSelectedService(selected: string | null): void {
+    if (!this.cy) {
+      return;
+    }
+    this.cy.nodes().removeClass('selected-service');
     if (selected) {
-      this.cy.nodes(`[service = "${selected.replace(/"/g, '')}"]`).addClass('selected-service');
+      this.cy
+        .nodes()
+        .filter((node) => node.data('service') === selected)
+        .addClass('selected-service');
     }
   }
 

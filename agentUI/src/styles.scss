@@ -1,0 +1,177 @@
+// Selective Bootstrap 5.3.8 SCSS imports (only components actually used by HealOps)
+@import "bootstrap/scss/functions";
+@import "bootstrap/scss/variables";
+@import "bootstrap/scss/variables-dark";
+@import "bootstrap/scss/maps";
+@import "bootstrap/scss/mixins";
+@import "bootstrap/scss/utilities";
+
+// Layout & core typography
+@import "bootstrap/scss/root";
+@import "bootstrap/scss/reboot";
+@import "bootstrap/scss/type";
+@import "bootstrap/scss/containers";
+@import "bootstrap/scss/grid";
+
+// Used UI components only (omits carousel, accordion, offcanvas, modal, popover, tooltip, toasts, floating labels, etc.)
+@import "bootstrap/scss/tables";
+@import "bootstrap/scss/forms/labels";
+@import "bootstrap/scss/forms/form-control";
+@import "bootstrap/scss/forms/form-select";
+@import "bootstrap/scss/forms/input-group";
+@import "bootstrap/scss/buttons";
+@import "bootstrap/scss/button-group";
+@import "bootstrap/scss/nav";
+@import "bootstrap/scss/navbar";
+@import "bootstrap/scss/card";
+@import "bootstrap/scss/badge";
+@import "bootstrap/scss/alert";
+@import "bootstrap/scss/list-group";
+@import "bootstrap/scss/spinners";
+@import "bootstrap/scss/close";
+
+// Helpers & utility API
+@import "bootstrap/scss/helpers/color-bg";
+@import "bootstrap/scss/helpers/colored-links";
+@import "bootstrap/scss/helpers/position";
+@import "bootstrap/scss/helpers/visually-hidden";
+@import "bootstrap/scss/utilities/api";
+
+// Scoped Bootstrap Icons (only the 32 glyphs rendered by HealOps templates)
+@font-face {
+  font-display: block;
+  font-family: "bootstrap-icons";
+  src: url("../node_modules/bootstrap-icons/font/fonts/bootstrap-icons.woff2") format("woff2"),
+       url("../node_modules/bootstrap-icons/font/fonts/bootstrap-icons.woff") format("woff");
+}
+
+.bi::before,
+[class^="bi-"]::before,
+[class*=" bi-"]::before {
+  display: inline-block;
+  font-family: bootstrap-icons !important;
+  font-style: normal;
+  font-weight: normal !important;
+  font-variant: normal;
+  text-transform: none;
+  line-height: 1;
+  vertical-align: -0.125em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.bi-activity::before { content: "\f66b"; }
+.bi-arrow-clockwise::before { content: "\f116"; }
+.bi-arrow-counterclockwise::before { content: "\f117"; }
+.bi-arrow-left::before { content: "\f12f"; }
+.bi-arrow-repeat::before { content: "\f130"; }
+.bi-arrow-right-short::before { content: "\f135"; }
+.bi-chat-dots::before { content: "\f24a"; }
+.bi-chat-square-text::before { content: "\f264"; }
+.bi-check2-all::before { content: "\f26f"; }
+.bi-check2-circle::before { content: "\f270"; }
+.bi-check-circle-fill::before { content: "\f26a"; }
+.bi-check-lg::before { content: "\f633"; }
+.bi-dash-circle::before { content: "\f2e6"; }
+.bi-diagram-3::before { content: "\f2ee"; }
+.bi-exclamation-diamond-fill::before { content: "\f334"; }
+.bi-exclamation-octagon::before { content: "\f337"; }
+.bi-exclamation-octagon-fill::before { content: "\f336"; }
+.bi-exclamation-triangle-fill::before { content: "\f33a"; }
+.bi-hdd-network::before { content: "\f40d"; }
+.bi-journal-code::before { content: "\f43f"; }
+.bi-journal-plus::before { content: "\f442"; }
+.bi-lightning-charge::before { content: "\f46d"; }
+.bi-lock-fill::before { content: "\f47a"; }
+.bi-person-badge::before { content: "\f4d3"; }
+.bi-plus-lg::before { content: "\f64d"; }
+.bi-shield-check::before { content: "\f52f"; }
+.bi-shield-lock::before { content: "\f538"; }
+.bi-shield-lock-fill::before { content: "\f537"; }
+.bi-speedometer2::before { content: "\f580"; }
+.bi-stopwatch::before { content: "\f597"; }
+.bi-x-lg::before { content: "\f659"; }
+.bi-x-octagon-fill::before { content: "\f626"; }
+
+:root {
+  color-scheme: dark;
+  --healops-bg: #0d1117;
+  --healops-surface: #161b22;
+  --healops-border: #30363d;
+}
+
+body {
+  background-color: var(--healops-bg);
+  color: #e6edf3;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  min-height: 100vh;
+}
+
+.healops-surface {
+  background-color: var(--healops-surface);
+  border: 1px solid var(--healops-border);
+  color: #e6edf3;
+}
+
+.healops-pre {
+  background-color: #0d1117;
+  border: 1px solid var(--healops-border);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  font-size: 0.8rem;
+  color: #c9d1d9;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.healops-dialog {
+  background: var(--healops-surface);
+  color: #e6edf3;
+  border: 1px solid var(--healops-border);
+  border-radius: 0.5rem;
+  max-width: 560px;
+  width: calc(100vw - 2rem);
+  padding: 0;
+}
+
+.healops-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.healops-markdown {
+  background-color: #0d1117;
+  border: 1px solid var(--healops-border);
+  border-radius: 0.375rem;
+  padding: 0.85rem 1rem;
+  max-height: 360px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+.healops-markdown :is(h1, h2, h3, h4) {
+  color: #ffffff;
+  font-size: 0.95rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+.healops-markdown :is(h1, h2, h3, h4):first-child {
+  margin-top: 0;
+}
+
+.healops-markdown :is(p, ul, ol) {
+  margin-bottom: 0.5rem;
+}
+
+.healops-markdown code {
+  color: #79c0ff;
+}
+
+.healops-markdown pre {
+  background: #161b22;
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  overflow-x: auto;
+}

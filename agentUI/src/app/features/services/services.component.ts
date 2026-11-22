@@ -10,7 +10,17 @@ import {
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
-import { firstValueFrom } from 'rxjs';
+import {
+  Subject,
+  catchError,
+  debounceTime,
+  distinctUntilChanged,
+  firstValueFrom,
+  forkJoin,
+  map,
+  of,
+  switchMap,
+} from 'rxjs';
 import {
   AllowedMetricName,
   LogQueryResponse,
@@ -310,6 +320,9 @@ export class ServicesComponent {
   readonly loading = signal<boolean>(false);
   readonly error = signal<string | null>(null);
 
+  private readonly serviceInput$ = new Subject<string>();
+  private serviceRequestToken = 0;
+
   constructor() {
     this.route.queryParamMap
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -325,6 +338,47 @@ export class ServicesComponent {
         }
       });
 
+    this.serviceInput$
+      .pipe(
+        map((value) => value.trim()),
+        debounceTime(300),
+        distinctUntilChanged(),
+        switchMap((trimmedService) => {
+          const envId = this.envStore.selectedEnvironmentId();
+          if (!envId) {
+            return of(null);
+          }
+          const token = ++this.serviceRequestToken;
+          const svcParam = trimmedService || undefined;
+          const traceFilter = this.traceFilterId() ?? undefined;
+          const traces$ = this.api
+            .getTraces({ environmentId: envId, service: svcParam, limit: 20 })
+            .pipe(catchError(() => of(null)));
+          const logs$ = this.api
+            .getLogs({ environmentId: envId, service: svcParam, traceId: traceFilter, limit: 50 })
+            .pipe(catchError(() => of(null)));
+          const metric$ = svcParam
+            ? this.api
+                .getMetricsRange({
+                  environmentId: envId,
+                  service: svcParam,
+                  metric: this.selectedMetric(),
+                })
+                .pipe(catchError(() => of(null)))
+            : of(null);
+          return forkJoin({ traces: traces$, logs: logs$, metric: metric$, token: of(token) });
+        }),
+        takeUntilDestroyed(this.destroyRef)
+      )
+      .subscribe((result) => {
+        if (!result || result.token !== this.serviceRequestToken) {
+          return;
+        }
+        this.traces.set(result.traces);
+        this.logs.set(result.logs);
+        this.metricData.set(result.metric);
+      });
+
     effect(() => {
       const envId = this.envStore.selectedEnvironmentId();
       if (envId) {
@@ -335,10 +389,7 @@ export class ServicesComponent {
 
   onServiceInput(value: string): void {
     this.selectedService.set(value);
-    const trimmed = value.trim();
-    if (trimmed) {
-      void this.loadServiceScopedData(this.envStore.selectedEnvironmentId(), trimmed);
-    }
+    this.serviceInput$.next(value);
   }
 
   onMetricChange(metric: string): void {
@@ -405,16 +456,25 @@ export class ServicesComponent {
   }
 
   private async loadServiceScopedData(environmentId: string, service: string): Promise<void> {
+    const token = ++this.serviceRequestToken;
     const svcParam = service.trim() || undefined;
     const tasks: Promise<unknown>[] = [
       firstValueFrom(this.api.getTraces({ environmentId, service: svcParam, limit: 20 }))
-        .then((res) => this.traces.set(res))
-        .catch(() => this.traces.set(null)),
-      this.loadLogs(environmentId, svcParam, this.traceFilterId() ?? undefined),
+        .then((res) => {
+          if (token === this.serviceRequestToken) {
+            this.traces.set(res);
+          }
+        })
+        .catch(() => {
+          if (token === this.serviceRequestToken) {
+            this.traces.set(null);
+          }
+        }),
+      this.loadLogs(environmentId, svcParam, this.traceFilterId() ?? undefined, token),
     ];
 
     if (svcParam) {
-      tasks.push(this.loadMetricSeries(environmentId, svcParam, this.selectedMetric()));
+      tasks.push(this.loadMetricSeries(environmentId, svcParam, this.selectedMetric(), token));
     } else {
       this.metricData.set(null);
     }
@@ -425,30 +485,40 @@ export class ServicesComponent {
   private async loadMetricSeries(
     environmentId: string,
     service: string,
-    metric: AllowedMetricName
+    metric: AllowedMetricName,
+    token = this.serviceRequestToken
   ): Promise<void> {
     try {
       const range = await firstValueFrom(
         this.api.getMetricsRange({ environmentId, service, metric })
       );
-      this.metricData.set(range);
+      if (token === this.serviceRequestToken) {
+        this.metricData.set(range);
+      }
     } catch (err: unknown) {
-      this.error.set(toApiErrorMessage(err, 'Unable to load metric series.'));
+      if (token === this.serviceRequestToken) {
+        this.error.set(toApiErrorMessage(err, 'Unable to load metric series.'));
+      }
     }
   }
 
   private async loadLogs(
     environmentId: string,
     service?: string,
-    traceId?: string
+    traceId?: string,
+    token = this.serviceRequestToken
   ): Promise<void> {
     try {
       const res = await firstValueFrom(
         this.api.getLogs({ environmentId, service, traceId, limit: 50 })
       );
-      this.logs.set(res);
+      if (token === this.serviceRequestToken) {
+        this.logs.set(res);
+      }
     } catch {
-      this.logs.set(null);
+      if (token === this.serviceRequestToken) {
+        this.logs.set(null);
+      }
     }
   }
 }

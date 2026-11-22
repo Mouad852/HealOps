@@ -190,12 +190,14 @@ export class IncidentsComponent {
   readonly error = signal<string | null>(null);
 
   private readonly pageSize = 20;
+  private hasLoadedExtraPages = false;
 
   constructor() {
     effect(() => {
       const envId = this.envStore.selectedEnvironmentId();
       const status = this.statusFilter();
       const severity = this.severityFilter();
+      this.hasLoadedExtraPages = false;
       void this.fetchPage(envId, status, severity, null, false);
     });
 
@@ -203,14 +205,9 @@ export class IncidentsComponent {
       .ofType('incident.updated')
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((envelope) => {
-        if (envelope.environmentId === this.envStore.selectedEnvironmentId()) {
-          void this.fetchPage(
-            this.envStore.selectedEnvironmentId(),
-            this.statusFilter(),
-            this.severityFilter(),
-            null,
-            false
-          );
+        const selectedEnv = this.envStore.selectedEnvironmentId();
+        if (envelope.environmentId === selectedEnv) {
+          void this.refreshOnSseUpdate(selectedEnv, envelope.incidentId);
         }
       });
   }
@@ -224,6 +221,7 @@ export class IncidentsComponent {
   }
 
   reload(): void {
+    this.hasLoadedExtraPages = false;
     void this.fetchPage(
       this.envStore.selectedEnvironmentId(),
       this.statusFilter(),
@@ -245,6 +243,54 @@ export class IncidentsComponent {
       cursor,
       true
     );
+  }
+
+  private async refreshOnSseUpdate(environmentId: string, updatedIncidentId: string | null): Promise<void> {
+    if (!this.hasLoadedExtraPages) {
+      await this.fetchPage(environmentId, this.statusFilter(), this.severityFilter(), null, false);
+      return;
+    }
+    try {
+      const status = this.statusFilter();
+      const severity = this.severityFilter();
+      const page1 = await firstValueFrom(
+        this.api.getIncidentsPage({
+          environmentId,
+          status,
+          severity,
+          cursor: null,
+          limit: this.pageSize,
+        })
+      );
+      const page1ById = new Map(page1.items.map((item) => [item.id, item]));
+      const existing = this.incidents();
+      const existingIds = new Set(existing.map((item) => item.id));
+      const newItems = page1.items.filter((item) => !existingIds.has(item.id));
+
+      let extraUpdated: IncidentResponse | null = null;
+      if (updatedIncidentId && existingIds.has(updatedIncidentId) && !page1ById.has(updatedIncidentId)) {
+        extraUpdated = await firstValueFrom(this.api.getIncident(updatedIncidentId)).catch(() => null);
+      }
+
+      const mergedExisting = existing
+        .map((item) => {
+          if (page1ById.has(item.id)) {
+            return page1ById.get(item.id)!;
+          }
+          if (extraUpdated && item.id === extraUpdated.id) {
+            return extraUpdated;
+          }
+          return item;
+        })
+        .filter(
+          (item) =>
+            (!status || item.status === status) && (!severity || item.severity === severity)
+        );
+
+      this.incidents.set([...newItems, ...mergedExisting]);
+    } catch {
+      // Keep already-loaded pages intact if background SSE refresh fails transiently
+    }
   }
 
   private async fetchPage(
@@ -275,6 +321,7 @@ export class IncidentsComponent {
         })
       );
       if (append) {
+        this.hasLoadedExtraPages = true;
         const existingIds = new Set(this.incidents().map((i) => i.id));
         const merged = [...this.incidents(), ...page.items.filter((i) => !existingIds.has(i.id))];
         this.incidents.set(merged);
