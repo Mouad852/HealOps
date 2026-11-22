@@ -22,7 +22,7 @@ RUN npx ng build agentUI --configuration production
 
 ############## STAGE 2: Serve Angular app with Nginx ##############
 
-FROM nginx:alpine AS production-stage
+FROM nginx:1.27.4-alpine AS production-stage
 
 # Remove default config
 RUN rm /etc/nginx/conf.d/default.conf

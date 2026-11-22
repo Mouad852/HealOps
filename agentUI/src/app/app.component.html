@@ -1,1 +1,44 @@
-<app-chat></app-chat>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark px-3 border-bottom border-secondary shadow-sm">
+  <div class="container-fluid">
+    <a class="navbar-brand d-flex align-items-center gap-2" routerLink="/dashboard">
+      <i class="bi bi-shield-check text-success fs-4"></i>
+      <span class="fw-bold tracking-tight">HealOps Autopilot</span>
+    </a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMenu">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navMenu">
+      <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+        <li class="nav-item">
+          <a class="nav-link" routerLink="/dashboard" routerLinkActive="active"><i class="bi bi-speedometer2 me-1"></i>Overview</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" routerLink="/incidents" routerLinkActive="active"><i class="bi bi-exclamation-octagon me-1"></i>Incidents</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" routerLink="/approvals" routerLinkActive="active"><i class="bi bi-check2-circle me-1"></i>Approvals</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" routerLink="/chat" routerLinkActive="active"><i class="bi bi-robot me-1"></i>Copilot</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" routerLink="/runbooks" routerLinkActive="active"><i class="bi bi-journal-code me-1"></i>Runbooks</a>
+        </li>
+      </ul>
+      <div class="d-flex align-items-center gap-2">
+        <label class="text-light small text-nowrap"><i class="bi bi-hdd-network me-1"></i>Env:</label>
+        <select class="form-select form-select-sm bg-secondary text-white border-0" [value]="selectedEnvironment()" (change)="setEnvironment($any($event.target).value)">
+          <option *ngFor="let env of environments" [value]="env.id">{{ env.label }}</option>
+        </select>
+        <span class="badge bg-success d-flex align-items-center gap-1 ms-2">
+          <span class="spinner-grow spinner-grow-sm" role="status" style="width: 0.5rem; height: 0.5rem;"></span>
+          Online
+        </span>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<main class="container-fluid py-4 px-4">
+  <router-outlet></router-outlet>
+</main>

@@ -33,8 +33,8 @@ export class ChatComponent {
     this.response = "";
     this.progress = true;
 
-    // hanaya localhost
-    this.http.get("http://localhost:8888/AskAgent?query=" + this.query,
+    // Call relative control-plane endpoint via Nginx
+    this.http.get("/api/AskAgent?query=" + encodeURIComponent(this.query),
       { responseType: 'text', observe: 'events', reportProgress: true })
       .subscribe({
         next: evt => {

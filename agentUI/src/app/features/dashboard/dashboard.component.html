@@ -1,0 +1,126 @@
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="card bg-dark text-white border-secondary h-100 shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <h6 class="card-subtitle text-muted mb-1">Active Incidents</h6>
+            <h2 class="card-title mb-0 text-danger fw-bold">{{ activeIncidents().length }}</h2>
+          </div>
+          <i class="bi bi-exclamation-octagon text-danger fs-1"></i>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card bg-dark text-white border-secondary h-100 shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <h6 class="card-subtitle text-muted mb-1">Pending Approvals</h6>
+            <h2 class="card-title mb-0 text-warning fw-bold">0</h2>
+          </div>
+          <i class="bi bi-shield-exclamation text-warning fs-1"></i>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card bg-dark text-white border-secondary h-100 shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <h6 class="card-subtitle text-muted mb-1">Infrastructure Health</h6>
+            <h2 class="card-title mb-0 text-success fw-bold">Healthy</h2>
+          </div>
+          <i class="bi bi-check-circle text-success fs-1"></i>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card bg-dark text-white border-secondary h-100 shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <h6 class="card-subtitle text-muted mb-1">Telemetry Status</h6>
+            <h2 class="card-title mb-0 text-info fw-bold">Connected</h2>
+          </div>
+          <i class="bi bi-activity text-info fs-1"></i>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card bg-dark text-white border-secondary shadow-sm">
+      <div class="card-header border-secondary d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-list-task me-2"></i>Active & Recent Incidents</h5>
+        <button class="btn btn-sm btn-outline-secondary" (click)="loadIncidents()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+      </div>
+      <div class="card-body p-0">
+        <div *ngIf="loading()" class="text-center py-4">
+          <div class="spinner-border text-primary" role="status"></div>
+        </div>
+        <div *ngIf="!loading() && activeIncidents().length === 0" class="text-center py-5 text-muted">
+          <i class="bi bi-check2-all fs-1 text-success d-block mb-2"></i>
+          No active incidents detected. All monitored services are healthy.
+        </div>
+        <table *ngIf="!loading() && activeIncidents().length > 0" class="table table-dark table-hover mb-0">
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Service</th>
+              <th>Status</th>
+              <th>Started</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let inc of activeIncidents()">
+              <td>
+                <span class="badge" [ngClass]="{'bg-danger': inc.severity === 'CRITICAL' || inc.severity === 'HIGH', 'bg-warning': inc.severity === 'MEDIUM', 'bg-info': inc.severity === 'LOW'}">
+                  {{ inc.severity }}
+                </span>
+              </td>
+              <td class="fw-semibold">{{ inc.service }}</td>
+              <td><span class="badge bg-secondary">{{ inc.status }}</span></td>
+              <td class="small text-muted">{{ inc.startedAt | date:'short' }}</td>
+              <td>
+                <a [routerLink]="['/incidents', inc.id]" class="btn btn-sm btn-outline-primary">Details</a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="card bg-dark text-white border-secondary shadow-sm mb-3">
+      <div class="card-header border-secondary">
+        <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Adapters Status</h5>
+      </div>
+      <div class="card-body">
+        <ul class="list-group list-group-flush bg-transparent">
+          <li class="list-group-item bg-transparent text-white border-secondary d-flex justify-content-between">
+            <span>Docker Control Plane</span><span class="badge bg-success">Ready</span>
+          </li>
+          <li class="list-group-item bg-transparent text-white border-secondary d-flex justify-content-between">
+            <span>Prometheus Smart Monitor</span><span class="badge bg-success">Ready</span>
+          </li>
+          <li class="list-group-item bg-transparent text-white border-secondary d-flex justify-content-between">
+            <span>Kubernetes Manager</span><span class="badge bg-success">Ready</span>
+          </li>
+          <li class="list-group-item bg-transparent text-white border-secondary d-flex justify-content-between">
+            <span>OpenStack Orchestrator</span><span class="badge bg-success">Ready</span>
+          </li>
+          <li class="list-group-item bg-transparent text-white border-secondary d-flex justify-content-between">
+            <span>Jaeger & Tracing MCP</span><span class="badge bg-success">Ready</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
