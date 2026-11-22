@@ -1,6 +1,23 @@
 
 services:
 
+  postgres:
+    container_name: healops-postgres
+    image: postgres:17.4-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-healops}
+      POSTGRES_USER: ${POSTGRES_USER:-healops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - mynetwork
+
   cadvisor:
     container_name: cadvisor
     image: gcr.io/cadvisor/cadvisor:v0.49.1
@@ -17,13 +34,47 @@ services:
 
   prometheus:
     container_name: prometheus
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.2.0
     ports:
       - "9090:9090"
     volumes:
       - ./mcp-server-promethus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     depends_on:
       - cadvisor
+    networks:
+      - mynetwork
+
+  jaeger:
+    container_name: healops-jaeger
+    image: jaegertracing/jaeger:2.2.0
+    ports:
+      - "16686:16686"
+    networks:
+      - mynetwork
+
+  loki:
+    container_name: healops-loki
+    image: grafana/loki:3.4.1
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - mynetwork
+
+  otel-collector:
+    container_name: healops-otel-collector
+    image: otel/opentelemetry-collector-contrib:0.118.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+      - "13133:13133"
+    depends_on:
+      - jaeger
+      - loki
     networks:
       - mynetwork
 
@@ -83,6 +134,8 @@ services:
   tracing-mcp:
     build:
       context: ./tracing_mcp
+    environment:
+      JAEGER_QUERY_URL: "http://jaeger:16686"
     ports:
       - "9005:9005"
     networks:
@@ -92,6 +145,9 @@ services:
     build:
       context: ./Openstack-ai-agent
     environment:
+      POSTGRES_URL: "jdbc:postgresql://postgres:5432/${POSTGRES_DB:-healops}"
+      POSTGRES_USER: ${POSTGRES_USER:-healops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       MCP_MONITOR_URL: "http://monitoring-mcp:9000"
       MCP_K8S_URL: "http://k8s-mcp:7777"
       MCP_OPENSTACK_URL: "http://openstack-mcp:7779"
@@ -102,7 +158,10 @@ services:
     ports:
       - "8888:8888"
     depends_on:
-      - monitoring-mcp
+      postgres:
+        condition: service_healthy
+      monitoring-mcp:
+        condition: service_started
     networks:
       - mynetwork
 
@@ -117,3 +176,6 @@ services:
 networks:
   mynetwork:
     driver: bridge
+
+volumes:
+  postgres_data:
