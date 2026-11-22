@@ -134,7 +134,18 @@ Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 30/30 tests (`Open
 
 Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 47/47 tests across all 10 test suites on 2026-11-22.
 
+### Phase 7: Persistent Conversations, Final Incident Reports (JSON + Markdown), Runbook Draft/Publish Lifecycle, & Remediation Analytics
+
+- Mapped `V3` schema JPA entities and repositories under `ddl-auto=validate`: `ConversationSessionEntity` (`conversation_sessions`), `ConversationMessageEntity` (`conversation_messages`, `ConversationMessageRole`), `IncidentReportEntity` (`incident_reports`), `RunbookEntity` (`runbooks`, `RunbookStatus`), and `RunbookVersionEntity` (`runbook_versions`).
+- Implemented environment-scoped Persistent Conversations API (`POST /api/v1/conversations`, `GET /api/v1/conversations?environmentId=`, `GET /api/v1/conversations/{id}`, `POST /api/v1/conversations/{id}/messages`) enforcing `env:*` authorities, redacting secrets and bounding content (`ConversationSanitizer`), returning `202 Accepted` with the user message ID, executing assistant replies asynchronously outside DB transactions via `@ApplicationModuleListener(propagation = Propagation.NOT_SUPPORTED)` (`ConversationAssistantListener` + `ConversationAssistantService`, guarded by `healops.conversation.llm-enabled`), explicitly passing each session UUID as Spring AI's `ChatMemory.CONVERSATION_ID`, storing evidence/execution/incident links by reference, and appending `conversation.token` and `conversation.completed` rows to `dashboard_events`.
+- Implemented deterministic, idempotent Final Incident Reports (`IncidentTerminalStateReachedEvent`, `IncidentReportListener`, `IncidentReportService`, `IncidentReportRenderer`, and `GET /api/v1/incidents/{incidentId}/report`) automatically generating structured JSON and rendered Markdown whenever an incident reaches `CLOSED`, `ROLLED_BACK`, `FAILED`, or `CANCELLED`, aggregating alert metadata, ordered timeline with phase durations, evidence inventory, diagnosis with cited evidence IDs, proposed actions, approvals, tool executions, `BEFORE`/`AFTER`/`POST_ROLLBACK` health comparison, `RemediationOutcomeEntity`, and runbook candidate summary.
+- Implemented Runbook Draft/Publish lifecycle & matching (`POST /api/v1/runbooks/draft-from-incident/{incidentId}` rejecting non-`CLOSED` incidents with `409 Conflict`, `PUT /api/v1/runbooks/{runbookId}` creating versioned draft step lists validated through `ActionCatalogValidator`, `POST /api/v1/runbooks/{runbookId}/publish` enforcing `runbook:publish`, stamping `publishedBy` strictly from `Authentication`, and recording append-only `RUNBOOK_PUBLISHED` audit records, plus `GET /api/v1/runbooks` and read-only relational/tag `GET /api/v1/runbooks/suggestions?incidentId=`).
+- Implemented Remediation Analytics API (`GET /api/v1/analytics/remediation?environmentId=`, filtered by caller's authorized `env:*` authorities) computing total outcomes, overall success rate, breakdowns by `actionType` and `service`, rollback count/rate, rollback success rate, mean approval delay (ms), and mean time to recovery (MTTR in ms).
+- Added unit and integration tests (`ConversationSanitizerTest`, `IncidentReportRendererTest`, `RunbookMatchingEngineTest`, `RemediationAnalyticsCalculatorTest`, and `Phase7IntegrationTest`).
+
+Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 57/57 tests across all 15 test suites on 2026-11-22.
+
 ## Next milestone
 
-Implement Phase 7 persistent conversation sessions/messages, final incident reports (structured JSON + rendered Markdown), runbook draft/publish lifecycle, and remediation analytics, followed by Phase 8 SSE dashboard APIs.
+Implement Phase 8 replayable SSE dashboard event stream (`GET /api/v1/events?environmentId=` with `Last-Event-ID`), cursor-paginated overview/topology/metrics/trace BFF APIs, and Phase 9 Angular dashboard integration.
 

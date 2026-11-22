@@ -82,6 +82,14 @@ public class IncidentService {
         ));
         recordDashboardUpdate(updatedIncident, request.event().name(), request.actor());
         publishNextWorkflowEventIfEnabled(updatedIncident, toStatus, request.event(), request.actor(), request.reason(), request.metadata());
+        if (toStatus.isTerminal()) {
+            eventPublisher.publishEvent(new IncidentTerminalStateReachedEvent(
+                    updatedIncident.getId(),
+                    updatedIncident.getEnvironmentId(),
+                    toStatus,
+                    updatedIncident.getTraceId()
+            ));
+        }
         return toResponse(updatedIncident);
     }
 

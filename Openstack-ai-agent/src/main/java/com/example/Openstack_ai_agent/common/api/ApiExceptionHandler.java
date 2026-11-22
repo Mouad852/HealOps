@@ -1,5 +1,6 @@
 package com.example.Openstack_ai_agent.common.api;
 
+import com.example.Openstack_ai_agent.conversation.ConversationNotFoundException;
 import com.example.Openstack_ai_agent.evidence.EvidenceCollectionNotAllowedException;
 import com.example.Openstack_ai_agent.incident.IncidentNotFoundException;
 import com.example.Openstack_ai_agent.incident.IncidentVersionConflictException;
@@ -8,6 +9,9 @@ import com.example.Openstack_ai_agent.remediation.ActionCatalogValidationExcepti
 import com.example.Openstack_ai_agent.remediation.ApprovalConflictException;
 import com.example.Openstack_ai_agent.remediation.PolicyDeniedException;
 import com.example.Openstack_ai_agent.remediation.ProposedActionNotFoundException;
+import com.example.Openstack_ai_agent.report.IncidentReportConflictException;
+import com.example.Openstack_ai_agent.runbook.RunbookConflictException;
+import com.example.Openstack_ai_agent.runbook.RunbookNotFoundException;
 import jakarta.persistence.OptimisticLockException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -53,11 +57,20 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
     }
 
+    @ExceptionHandler({ConversationNotFoundException.class, RunbookNotFoundException.class})
+    public ResponseEntity<ProblemDetail> handleResourceNotFound(RuntimeException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, exception.getMessage());
+        problem.setTitle("Resource not found");
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
+    }
+
     @ExceptionHandler({
             InvalidIncidentTransitionException.class,
             IncidentVersionConflictException.class,
             EvidenceCollectionNotAllowedException.class,
             ApprovalConflictException.class,
+            IncidentReportConflictException.class,
+            RunbookConflictException.class,
             ObjectOptimisticLockingFailureException.class,
             OptimisticLockException.class
     })

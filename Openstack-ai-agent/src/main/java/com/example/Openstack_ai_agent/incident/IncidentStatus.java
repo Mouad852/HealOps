@@ -12,5 +12,9 @@ public enum IncidentStatus {
     ROLLING_BACK,
     ROLLED_BACK,
     FAILED,
-    CANCELLED
+    CANCELLED;
+
+    public boolean isTerminal() {
+        return this == CLOSED || this == ROLLED_BACK || this == FAILED || this == CANCELLED;
+    }
 }
