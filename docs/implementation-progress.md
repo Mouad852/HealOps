@@ -162,7 +162,26 @@ Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 57/57 tests across
 
 Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 73/73 tests across all 21 test suites on 2026-11-22.
 
+### Phase 9: Angular 19 Operational Dashboard (`agentUI`)
+
+- Implemented Core Architecture (`agentUI/src/app/core/`):
+  - `core/api/`: Strict zero-`any` TypeScript DTOs (`api.models.ts`) matching all Phase 1–8 Spring Boot BFF & SSE contracts 1:1, typed `HealopsApiClient` (`healops-api.client.ts`) using relative `/api/v1/**` URLs and object-form query parameters, and functional `apiInterceptor` (`api.interceptor.ts`) adding `X-Correlation-Id`, `withCredentials: true`, Angular `XSRF-TOKEN`/`X-XSRF-TOKEN` handling, and RFC 9457 `ProblemDetail` error normalization (`problem-detail.ts`).
+  - `core/events/`: Injectable `EVENT_SOURCE_FACTORY` (`event-source.token.ts`) and `DashboardEventsService` (`dashboard-events.service.ts`) maintaining one shared SSE connection per selected environment, registering all 7 named events (`incident.updated`, `tool-execution.updated`, `approval.created`, `approval.updated`, `service-health.updated`, `conversation.token`, `conversation.completed`), tracking connection state (`connecting | connected | reconnecting | disconnected`), keeping the observable alive across transient reconnect errors, and closing cleanly on environment switch or teardown.
+  - `core/state/`: Signal-based `AuthStore`, `EnvironmentStore` (persisting selected environment ID without storing auth tokens), and `DashboardStore` (syncing SSE stream and overview refreshes via `effect` + `untracked`, plus throttled screen-reader announcements).
+- Implemented `OnPush` Application Shell (`layout/app-shell/`) and lazy-loaded standalone routes (`loadComponent` in `app.routes.ts`) for `/dashboard`, `/incidents`, `/incidents/:incidentId`, `/approvals`, `/services`, `/chat`, and `/runbooks`, with environment selector, user/role badge, live SSE indicator, production context banner, and throttled `aria-live="polite"` status region.
+- Implemented accessible reusable shared components (`shared/`): non-color-only `StatusBadgeComponent`, `HealthCardComponent`, `IncidentTimelineComponent` (`<ol>` + `<time datetime>` + phase durations), `ToolProgressComponent`, `EvidenceDialogComponent` (native `<dialog>` side drawer with Escape/focus restoration), `MetricsChartComponent` (tree-shakeable Chart.js direct imports, no-animation live updates, clean `chart.destroy()`, and accessible summary table), and `ServiceMapComponent` (direct Cytoscape import with `breadthfirst`/`cose` layouts, `cy.destroy()`, and synchronized keyboard-accessible dependency tables).
+- Implemented full operational feature modules (`features/`):
+  - **Dashboard (`/dashboard`)**: KPI cards, status/severity breakdowns, service health cards, remediation analytics table, live SSE event feed, and `incident:write`-gated manual demo alert intake.
+  - **Incidents (`/incidents` & `/incidents/:incidentId`)**: Cursor-paginated filterable list (`Load more` via `nextCursor`), ordered timeline, evidence-cited diagnosis opening the evidence drawer, filterable evidence table, proposed actions, before/after/post-rollback health comparison table, live tool progress, Markdown/JSON final incident report, failed-phase retry, draft-runbook action, and read-only suggested runbooks.
+  - **Approvals (`/approvals`)**: Pending/all queue with risk, command preview, rollback strategy, `incident:approve` RBAC gating, native confirmation `<dialog>` with duplicate-submit protection (`Idempotency-Key` + pending lock), and automatic queue refresh on `409 Conflict` (never invoking direct execution).
+  - **Services (`/services`)**: Lazy-loaded topology map, allowlisted range metrics chart, Jaeger v3 trace list/critical path/slowest spans, and correlated sanitized logs.
+  - **Chat (`/chat`)**: Replaced legacy `/api/AskAgent` GET flow with persisted environment-scoped sessions (`/api/v1/conversations`), `202 Accepted` message posting, live SSE token/completion streaming, and incident/evidence/execution reference links.
+  - **Runbooks (`/runbooks`)**: Runbook catalog, draft-from-closed-incident flow, typed allowlisted step editor, draft versioning (`PUT /api/v1/runbooks/{id}`), and `runbook:publish`-gated publishing.
+- Repaired stale specs and added 18 unit/component tests covering `AppComponent`, `HealopsApiClient` & `apiInterceptor`, `DashboardEventsService`, `DashboardStore` & `EnvironmentStore`, `IncidentsComponent`, `ApprovalsComponent`, `ChatComponent`, `RunbooksComponent`, `MetricsChartComponent`, and `ServiceMapComponent`.
+
+Verification: `cd agentUI; npm test -- --watch=false --browsers=ChromeHeadless` passed 18/18 specs and `cd agentUI; npm run build` succeeded within configured production budgets (Chart.js and Cytoscape isolated in lazy `services-component` chunk) on 2026-11-22.
+
 ## Next milestone
 
-Complete Phase 9 Angular 19 Operational Dashboard integration against the Phase 8 BFF and SSE endpoints.
+Complete Phase 10 end-to-end hardening, demo Compose profile, CI stages, security checks, and acceptance testing.
 

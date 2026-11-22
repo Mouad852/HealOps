@@ -1,16 +1,48 @@
 import { Routes } from '@angular/router';
-import { DashboardComponent } from './features/dashboard/dashboard.component';
-import { IncidentsComponent } from './features/incidents/incidents.component';
-import { ApprovalsComponent } from './features/approvals/approvals.component';
-import { ChatComponent } from './chat/chat.component';
-import { RunbooksComponent } from './features/runbooks/runbooks.component';
 
 export const routes: Routes = [
   { path: '', redirectTo: 'dashboard', pathMatch: 'full' },
-  { path: 'dashboard', component: DashboardComponent },
-  { path: 'incidents', component: IncidentsComponent },
-  { path: 'approvals', component: ApprovalsComponent },
-  { path: 'chat', component: ChatComponent },
-  { path: 'runbooks', component: RunbooksComponent },
-  { path: '**', redirectTo: 'dashboard' }
+  {
+    path: 'dashboard',
+    title: 'Dashboard — HealOps Autopilot',
+    loadComponent: () =>
+      import('./features/dashboard/dashboard.component').then((m) => m.DashboardComponent),
+  },
+  {
+    path: 'incidents',
+    title: 'Incidents — HealOps Autopilot',
+    loadComponent: () =>
+      import('./features/incidents/incidents.component').then((m) => m.IncidentsComponent),
+  },
+  {
+    path: 'incidents/:incidentId',
+    title: 'Incident Detail — HealOps Autopilot',
+    loadComponent: () =>
+      import('./features/incidents/incident-detail.component').then((m) => m.IncidentDetailComponent),
+  },
+  {
+    path: 'approvals',
+    title: 'Approvals — HealOps Autopilot',
+    loadComponent: () =>
+      import('./features/approvals/approvals.component').then((m) => m.ApprovalsComponent),
+  },
+  {
+    path: 'services',
+    title: 'Services & Observability — HealOps Autopilot',
+    loadComponent: () =>
+      import('./features/services/services.component').then((m) => m.ServicesComponent),
+  },
+  {
+    path: 'chat',
+    title: 'Copilot — HealOps Autopilot',
+    loadComponent: () =>
+      import('./features/chat/chat.component').then((m) => m.ChatComponent),
+  },
+  {
+    path: 'runbooks',
+    title: 'Runbooks — HealOps Autopilot',
+    loadComponent: () =>
+      import('./features/runbooks/runbooks.component').then((m) => m.RunbooksComponent),
+  },
+  { path: '**', redirectTo: 'dashboard' },
 ];

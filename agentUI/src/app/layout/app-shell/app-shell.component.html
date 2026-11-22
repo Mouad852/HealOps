@@ -1,0 +1,99 @@
+<header class="shell-header border-bottom border-secondary-subtle sticky-top">
+  <nav class="navbar navbar-expand-lg navbar-dark px-3" aria-label="Primary navigation">
+    <div class="container-fluid gap-3">
+      <a class="navbar-brand d-flex align-items-center gap-2" routerLink="/dashboard">
+        <i class="bi bi-shield-check text-info fs-4" aria-hidden="true"></i>
+        <span class="fw-bold tracking-tight">HealOps Autopilot</span>
+      </a>
+
+      <div class="collapse navbar-collapse show" id="healopsNav">
+        <ul class="navbar-nav me-auto mb-2 mb-lg-0 gap-1">
+          <li class="nav-item">
+            <a class="nav-link" routerLink="/dashboard" routerLinkActive="active">
+              <i class="bi bi-speedometer2 me-1" aria-hidden="true"></i>Dashboard
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" routerLink="/incidents" routerLinkActive="active">
+              <i class="bi bi-exclamation-octagon me-1" aria-hidden="true"></i>Incidents
+              @if (dashboardStore.activeIncidentCount() > 0) {
+                <span class="badge text-bg-info ms-1">{{ dashboardStore.activeIncidentCount() }}</span>
+              }
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" routerLink="/approvals" routerLinkActive="active">
+              <i class="bi bi-check2-circle me-1" aria-hidden="true"></i>Approvals
+              @if (dashboardStore.pendingApprovalCount() > 0) {
+                <span class="badge text-bg-warning ms-1">{{ dashboardStore.pendingApprovalCount() }}</span>
+              }
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" routerLink="/services" routerLinkActive="active">
+              <i class="bi bi-diagram-3 me-1" aria-hidden="true"></i>Services
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" routerLink="/chat" routerLinkActive="active">
+              <i class="bi bi-chat-dots me-1" aria-hidden="true"></i>Copilot
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" routerLink="/runbooks" routerLinkActive="active">
+              <i class="bi bi-journal-code me-1" aria-hidden="true"></i>Runbooks
+            </a>
+          </li>
+        </ul>
+
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          <label for="envSelector" class="text-secondary small text-nowrap mb-0">
+            <i class="bi bi-hdd-network me-1" aria-hidden="true"></i>Environment
+          </label>
+          <select
+            id="envSelector"
+            class="form-select form-select-sm bg-dark text-white border-secondary env-select"
+            [value]="envStore.selectedEnvironmentId()"
+            (change)="onEnvironmentChange($event)"
+            aria-label="Select environment"
+          >
+            @if (envStore.environments().length === 0) {
+              <option [value]="envStore.selectedEnvironmentId()">{{ envStore.selectedEnvironmentId() }}</option>
+            } @else {
+              @for (env of envStore.environments(); track env.id) {
+                <option [value]="env.id">{{ env.displayLabel }} ({{ env.id }})</option>
+              }
+            }
+          </select>
+
+          <app-status-badge
+            [value]="dashboardStore.connectionState()"
+            [label]="'Stream: ' + dashboardStore.connectionState()"
+            prefix="Live event stream"
+          />
+
+          <div class="user-pill d-flex align-items-center gap-1 px-2 py-1 rounded border border-secondary-subtle small">
+            <i class="bi bi-person-badge text-info" aria-hidden="true"></i>
+            <span class="text-white fw-medium">{{ authStore.username() }}</span>
+            <span class="badge text-bg-secondary">{{ authStore.roleLabel() }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  @if (envStore.isProductionSelected()) {
+    <div class="prod-banner px-3 py-1 small d-flex align-items-center gap-2" role="note">
+      <i class="bi bi-exclamation-diamond-fill" aria-hidden="true"></i>
+      <span>Production context selected. Environment selection changes scope only and does not elevate permissions.</span>
+    </div>
+  }
+</header>
+
+<div class="visually-hidden" aria-live="polite" aria-atomic="true">
+  {{ dashboardStore.liveAnnouncement() }}
+</div>
+
+<main class="container-fluid py-4 px-3 px-lg-4">
+  <router-outlet />
+</main>
