@@ -1,10 +1,15 @@
 # core/jaeger_manager.py
+import os
 import requests
 
 
 class JaegerManager:
-    def __init__(self, endpoint="http://localhost:16686/api"):
-        self.endpoint = endpoint.rstrip("/")
+    def __init__(self, endpoint=None):
+        if not endpoint:
+            base = os.getenv("JAEGER_QUERY_URL", "http://jaeger:16686").rstrip("/")
+            self.endpoint = f"{base}/api"
+        else:
+            self.endpoint = endpoint.rstrip("/")
 
     def list_services(self):
         url = f"{self.endpoint}/services"

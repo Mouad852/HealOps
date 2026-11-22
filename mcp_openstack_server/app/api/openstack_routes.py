@@ -38,6 +38,41 @@ def get_events():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/services")
+def list_services():
+    try:
+        return manager.list_services()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/nodes")
+def list_nodes():
+    try:
+        return manager.list_nodes()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/logs/{service}")
+def get_service_logs(service: str, tail: int = Query(200)):
+    try:
+        return manager.read_logs(service=service, tail=tail)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/metrics/{node}")
+def get_node_metrics(node: str):
+    try:
+        return manager.get_node_cpu_usage(node)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/analyze/{service}")
+def analyze_service_default(service: str, node: Optional[str] = Query("compute-1")):
+    try:
+        return manager.analyze_service(node, service)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/analyze/{node}/{service}")
 def analyze(node: str, service: str):
     try:
