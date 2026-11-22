@@ -1,7 +1,12 @@
-import docker
+try:
+    import docker
+except ImportError:
+    docker = None
 
 class DockerManager:
     def __init__(self):
+        if docker is None:
+            raise RuntimeError("docker SDK is not installed")
         self.client = docker.from_env()
 
     def list_containers(self, all=False):

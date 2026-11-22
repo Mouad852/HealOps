@@ -1,104 +1,151 @@
-from fastapi import APIRouter, HTTPException, Query, Body
-from typing import Optional, List
+import re
+from typing import List, Optional
+from fastapi import APIRouter, Body, HTTPException, Query
 from app.core.k8s_manager import KubernetesManager
 
+DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
+RESOURCE_NAME_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")
+PROTECTED_NAMESPACES = {"kube-system", "kube-public", "kube-node-lease"}
 
 router = APIRouter()
-manager = KubernetesManager()
-# GET /nodes
+manager: Optional[KubernetesManager] = None
+
+
+def get_k8s_manager() -> KubernetesManager:
+    global manager
+    if manager is None:
+        manager = KubernetesManager()
+    return manager
+
+
+def _validate_namespace(namespace: str) -> str:
+    if not namespace or not DNS_LABEL_PATTERN.match(namespace):
+        raise HTTPException(status_code=400, detail="Invalid Kubernetes namespace identifier")
+    return namespace
+
+
+def _validate_resource_name(name: str, label: str = "resource") -> str:
+    if not name or not RESOURCE_NAME_PATTERN.match(name):
+        raise HTTPException(status_code=400, detail=f"Invalid Kubernetes {label} identifier")
+    return name
+
+
+def _map_k8s_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException):
+        return exc
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, TimeoutError) or "timed out" in str(exc).lower():
+        return HTTPException(status_code=504, detail=f"Kubernetes adapter timeout: {exc}")
+    status_code = getattr(exc, "status", None)
+    if status_code == 404 or "404" in str(exc) or "not found" in str(exc).lower():
+        return HTTPException(status_code=404, detail=str(exc))
+    return HTTPException(status_code=502, detail=str(exc))
+
+
 @router.get("/nodes")
 def list_nodes():
     try:
-        return manager.list_nodes()
+        return get_k8s_manager().list_nodes()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _map_k8s_error(e)
 
 
-# GET /pods
 @router.get("/pods")
 def list_pods(namespace: Optional[str] = None):
+    if namespace is not None:
+        _validate_namespace(namespace)
     try:
-        return manager.list_pods(namespace)
+        return get_k8s_manager().list_pods(namespace)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _map_k8s_error(e)
 
 
-# GET /pods/{namespace}/{pod}/logs
 @router.get("/pods/{namespace}/{pod}/logs")
 def pod_logs(
     namespace: str,
     pod: str,
     container: Optional[str] = None,
-    tail: int = Query(200)
+    tail: int = Query(default=200, ge=1, le=2000),
 ):
+    _validate_namespace(namespace)
+    _validate_resource_name(pod, "pod")
+    if container is not None:
+        _validate_namespace(container)
     try:
-        return manager.get_pod_logs(namespace, pod, container, tail_lines=tail)
+        return get_k8s_manager().get_pod_logs(namespace, pod, container, tail_lines=tail)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _map_k8s_error(e)
 
 
-# POST /pods/{namespace}/{pod}/exec
 @router.post("/pods/{namespace}/{pod}/exec")
 def pod_exec(
     namespace: str,
     pod: str,
-    command: List[str] = Body(...)
+    command: List[str] = Body(...),
 ):
-    """Executes a command inside a pod container (non-streaming)"""
+    """Executes a command inside a pod container (non-streaming)."""
+    _validate_namespace(namespace)
+    _validate_resource_name(pod, "pod")
+    if namespace in PROTECTED_NAMESPACES:
+        raise HTTPException(status_code=403, detail=f"Protected namespace '{namespace}' cannot be mutated")
+    if not command:
+        raise HTTPException(status_code=400, detail="Command argument list must not be empty")
     try:
-        cli = manager.exec_in_pod(namespace, pod, command)
+        cli = get_k8s_manager().exec_in_pod(namespace, pod, command)
         output = ""
-
-        # Read output until stream closes
         while cli.is_open():
             cli.update(timeout=1)
-
             if cli.peek_stdout():
                 output += cli.read_stdout()
-
             if cli.peek_stderr():
                 output += cli.read_stderr()
-
             if not cli.is_open():
                 break
-
         return {"output": output}
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _map_k8s_error(e)
 
 
-# POST /deployments/{namespace}/{name}/scale
 @router.post("/deployments/{namespace}/{name}/scale")
 def scale_deployment(
     namespace: str,
     name: str,
-    replicas: int = Body(..., embed=True)
+    replicas: int = Body(..., embed=True, ge=0, le=20),
 ):
+    _validate_namespace(namespace)
+    _validate_resource_name(name, "deployment")
+    if namespace in PROTECTED_NAMESPACES:
+        raise HTTPException(status_code=403, detail=f"Protected namespace '{namespace}' cannot be scaled")
     try:
-        res = manager.scale_deployment(namespace, name, replicas)
-        return {"message": "scaled", "replicas": replicas}
+        get_k8s_manager().scale_deployment(namespace, name, replicas)
+        return {"message": "scaled", "namespace": namespace, "deployment": name, "replicas": replicas}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _map_k8s_error(e)
 
 
-# POST /apply — apply YAML
 @router.post("/apply")
 def apply_yaml(
     namespace: str = Body("default"),
-    yaml_text: str = Body(..., embed=True)
+    yaml_text: str = Body(..., embed=True),
 ):
+    _validate_namespace(namespace)
+    if namespace in PROTECTED_NAMESPACES:
+        raise HTTPException(status_code=403, detail=f"Protected namespace '{namespace}' cannot be mutated")
+    if not yaml_text or not yaml_text.strip():
+        raise HTTPException(status_code=400, detail="YAML manifest text must not be empty")
     try:
-        created = manager.apply_yaml(namespace, yaml_text)
+        created = get_k8s_manager().apply_yaml(namespace, yaml_text)
         return {"applied": created}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _map_k8s_error(e)
 
 
 @router.get("/analyze/{namespace}/{pod}")
 def analyze(namespace: str, pod: str):
+    _validate_namespace(namespace)
+    _validate_resource_name(pod, "pod")
     try:
-        return manager.analyze_pod(namespace, pod)
+        return get_k8s_manager().analyze_pod(namespace, pod)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise _map_k8s_error(e)

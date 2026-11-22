@@ -1,0 +1,110 @@
+name: HealOps CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  static-security-and-infra:
+    name: Static Security, Compose & OTel Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install YAML validator dependency
+        run: python -m pip install --upgrade pip pyyaml
+
+      - name: Run automated security and anti-pattern checks
+        run: python scripts/verify_security_antipatterns.py
+
+      - name: Validate Docker Compose (default profile)
+        run: docker compose --env-file .env.example config --quiet
+
+      - name: Validate Docker Compose (demo profile)
+        run: docker compose --profile demo --env-file .env.example config --quiet
+
+      - name: Validate OpenTelemetry Collector configuration
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+            otel/opentelemetry-collector-contrib:0.118.0 \
+            validate --config=/etc/otelcol-contrib/config.yaml
+
+  backend-java:
+    name: Spring Boot Control Plane (Java 21)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run Maven unit, WebMvc, Testcontainers PostgreSQL, and workflow tests
+        working-directory: Openstack-ai-agent
+        run: ./mvnw test
+
+  adapters-python:
+    name: Python MCP Adapters & Demo Workload (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Python test dependencies
+        run: python -m pip install --upgrade pip pytest fastapi httpx requests pyyaml
+
+      - name: Run pytest suites across all adapters and demo workload
+        run: |
+          pytest mcp_docker_server/tests
+          pytest mcp_k8s_server/tests
+          pytest mcp_openstack_server/tests
+          pytest mcp-server-promethus/tests
+          pytest tracing_mcp/tests
+          pytest demo-workload/tests
+
+  frontend-angular:
+    name: Angular 19 Dashboard (Karma + Production Build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: agentUI/package-lock.json
+
+      - name: Install Angular dependencies
+        working-directory: agentUI
+        run: npm ci
+
+      - name: Run Angular unit tests (ChromeHeadless)
+        working-directory: agentUI
+        run: npm test -- --watch=false --browsers=ChromeHeadless
+
+      - name: Build production bundle
+        working-directory: agentUI
+        run: npm run build

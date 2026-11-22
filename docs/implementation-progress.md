@@ -181,7 +181,36 @@ Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 73/73 tests across
 
 Verification: `cd agentUI; npm test -- --watch=false --browsers=ChromeHeadless` passed 18/18 specs and `cd agentUI; npm run build` succeeded within configured production budgets (Chart.js and Cytoscape isolated in lazy `services-component` chunk) on 2026-11-22.
 
-## Next milestone
+### Phase 10: End-to-End Hardening, Automated Test Pyramid, Demo Profile, CI Pipeline, Retention Jobs, and Documentation
 
-Complete Phase 10 end-to-end hardening, demo Compose profile, CI stages, security checks, and acceptance testing.
+- **Retention & Cleanup Jobs (`Openstack-ai-agent`)**:
+  - Added configurable scheduled retention package (`com.example.Openstack_ai_agent.retention`: `RetentionProperties`, `RetentionCleanupResult`, `RetentionCleanupService`, `SchedulingConfiguration`) with safe defaults (`healops.retention.dashboard-event-ttl=P7D`, `telemetry-reference-ttl=P30D`, `conversation-ttl=P30D`, `max-batch-size=500`, Micrometer `healops.retention.deleted` counters).
+  - Purges only eligible expired `dashboard_events`, expired `conversation_messages`/`conversation_sessions` (via batch JPQL delete respecting foreign keys), and stale uncited/unreferenced raw telemetry `evidence_items` (`METRIC`, `LOG`, `TRACE`, `COLLECTION_ERROR`), while never deleting immutable `audit_records`, `incidents`, `incident_events`, `approval_decisions`, `incident_reports`, or `remediation_outcomes`.
+  - Verified with `RetentionCleanupServiceTest` (proving eligible expired rows are purged while fresh, diagnosis-cited, `ALERT_CONTEXT`, and backdated 365-day immutable audit/incident records remain intact).
+- **Backend Test Pyramid Hardening (`Openstack-ai-agent`)**:
+  - Added `@WebMvcTest` suite (`ControlPlaneWebMvcTest`) verifying `401`/`403` RBAC, RFC 9457 `ProblemDetail` validation errors, cursor pagination & corrupt cursor rejection, `409 Conflict` approval concurrency, Alertmanager webhook CSRF exemption, and SSE async dispatch (`Last-Event-ID`, `X-Accel-Buffering: no`, `Cache-Control`, query-token rejection, environment scoping).
+  - Added PostgreSQL Testcontainers `@DataJpaTest` suite (`PostgresPersistenceTestcontainersTest` using pinned `postgres:17.4-alpine` with `@ServiceConnection` and `@Testcontainers(disabledWithoutDocker = true)`) verifying Flyway `V1`–`V4` PostgreSQL migrations, `uk_incidents_deduplication` unique constraint, JSONB audit persistence, and JPA `@Version` optimistic locking.
+  - Added comprehensive `EndToEndWorkflowHardeningTest` verifying restart recovery (`IncidentPublicationRecovery.resumeIncompletePublicationsOnStartup()`), duplicate alert idempotency, partial evidence failure (`COLLECTION_ERROR` alongside healthy evidence), denied approvals (`403` policy + audit & operator rejection → `CANCELLED` + report), failed adapter execution (`TIMED_OUT` → `FAILED` + audit + report), and failed verification rollback (`ROLLING_BACK` → `ROLLED_BACK` + `POST_ROLLBACK` snapshot + report).
+- **Python MCP Adapter Hardening & `pytest` Suites**:
+  - Hardened all five MCP adapters (`mcp_docker_server`, `mcp_k8s_server`, `mcp_openstack_server`, `mcp-server-promethus`, `tracing_mcp`): lazy manager initialization (no import-time daemon/kubeconfig dependencies), strict identifier/range validation, protected Kubernetes namespace guards (`403`), non-shell OpenStack validation, removed wildcard `allow_origins=["*"]` CORS and hardcoded inter-container `localhost` URLs, upgraded `tracing_mcp` from legacy `/api/traces` to Jaeger v3 `/api/v3/services` and `/api/v3/traces` with OTLP `resourceSpans` JSON parsing, bounded timeouts (`504` mapping), and pinned `prom/prometheus:v3.2.0` in `mcp-server-promethus/docker-compose.yml`.
+  - Added FastAPI `TestClient` `pytest` suites across all five adapters plus `demo-workload`.
+- **Safe Compose `demo` Profile & `demo` Spring Profile**:
+  - Added isolated, non-root `demo-workload/` FastAPI service (`python:3.13.2-slim`) with synthetic fault-injection endpoints (`/faults/latency`, `/faults/error-rate`, `/faults/unhealthy`, `/faults/reset`), Prometheus `/metrics`, structured logs, and OTLP trace emission wired under `profiles: ["demo"]` in `docker-compose.yml`.
+  - Added `@Profile("demo")` `DemoProfileSeeder` seeding the `demo` environment and a published demo runbook (`Demo Workload Latency & Error Recovery`) plus `env:demo` authorities exclusively when `demo` profile is active (`DemoProfileSeederTest`).
+- **CI Pipeline & Automated Security / Anti-Pattern Checks**:
+  - Added `scripts/verify_security_antipatterns.py` validating zero `WebClient.create(`/unmanaged `WebClient.builder()`, zero wildcard CORS, zero `shell=True`, zero legacy `/api/traces`, zero frontend `any`/`chart.js/auto`/`localhost` API URLs, zero `:latest` images, zero committed secrets, and valid `observability/otel-collector.yaml` pipelines.
+  - Added `.github/workflows/ci.yml` executing static security/Compose/OTel checks, Java 21 Maven tests, Python adapter `pytest` suites, and Angular `ChromeHeadless` tests + production build without external credentials.
+- **Documentation**:
+  - Rewrote `README.md` for the full HealOps Incident Autopilot architecture, quick-start & `demo` profile, local credentials/roles, incident/approval/rollback walkthrough, observability URLs, PostgreSQL persistence/retention/backup, automated test commands, and explicit non-production limitations.
+
+Verification (2026-11-22):
+- `python scripts/verify_security_antipatterns.py`: 6/6 check groups PASSED.
+- `cd Openstack-ai-agent; .\mvnw.cmd test`: `Tests run: 89, Failures: 0, Errors: 0, Skipped: 2` (87/87 executed tests passed across 26 suites; 2 PostgreSQL Testcontainers specs gracefully skipped in sandbox without Docker socket).
+- `pytest` suites across adapters & demo workload: 15/15 passed (`mcp_docker_server` 4, `mcp_k8s_server` 3, `mcp_openstack_server` 3, `mcp-server-promethus` 2, `tracing_mcp` 2, `demo-workload` 1).
+- `cd agentUI; npm test -- --watch=false --browsers=ChromeHeadless`: `TOTAL: 18 SUCCESS`; `cd agentUI; npm run build`: succeeded cleanly.
+- `docker compose --env-file .env.example config --quiet` & `docker compose --profile demo --env-file .env.example config --quiet`: both exited `0`.
+
+## Status
+
+Phases 0–10 are implemented and verified. Next operational step before any non-local deployment is running live acceptance tests against a full Compose `--profile demo` stack and integrating production SSO/network isolation controls as documented in `README.md`.
 

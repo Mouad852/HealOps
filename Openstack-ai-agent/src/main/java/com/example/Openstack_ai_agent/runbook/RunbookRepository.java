@@ -9,4 +9,6 @@ public interface RunbookRepository extends JpaRepository<RunbookEntity, UUID> {
     List<RunbookEntity> findAllByOrderByUpdatedAtDesc();
 
     List<RunbookEntity> findByStatusOrderByUpdatedAtDesc(RunbookStatus status);
+
+    boolean existsByNameIgnoreCase(String name);
 }

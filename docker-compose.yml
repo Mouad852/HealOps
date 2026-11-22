@@ -145,6 +145,7 @@ services:
     build:
       context: ./Openstack-ai-agent
     environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
       POSTGRES_URL: "jdbc:postgresql://postgres:5432/${POSTGRES_DB:-healops}"
       POSTGRES_USER: ${POSTGRES_USER:-healops}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
@@ -153,7 +154,15 @@ services:
       MCP_OPENSTACK_URL: "http://openstack-mcp:7779"
       MCP_DOCKER_URL: "http://docker-mcp:8000"
       MCP_TRACING_URL: "http://tracing-mcp:9005/apm"
+      PROMETHEUS_BASE_URL: ${PROMETHEUS_BASE_URL:-http://prometheus:9090}
+      LOKI_BASE_URL: ${LOKI_BASE_URL:-http://loki:3100}
+      JAEGER_QUERY_URL: ${JAEGER_QUERY_URL:-http://jaeger:16686}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      HEALOPS_OPERATOR_USER: ${HEALOPS_OPERATOR_USER:-operator}
+      HEALOPS_OPERATOR_PASSWORD: ${HEALOPS_OPERATOR_PASSWORD:-operator-local-dev}
+      HEALOPS_VIEWER_USER: ${HEALOPS_VIEWER_USER:-viewer}
+      HEALOPS_VIEWER_PASSWORD: ${HEALOPS_VIEWER_PASSWORD:-viewer-local-dev}
 
     ports:
       - "8888:8888"
@@ -165,11 +174,34 @@ services:
     networks:
       - mynetwork
 
+  demo-workload:
+    profiles:
+      - demo
+    build:
+      context: ./demo-workload
+    container_name: healops-demo-workload
+    environment:
+      OTEL_SERVICE_NAME: "demo-workload"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+    ports:
+      - "8095:8095"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8095/health', timeout=2)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      - otel-collector
+    networks:
+      - mynetwork
+
   agentuiservice:
     build:
       context: ./agentUI
     ports:
       - "80:80"
+    depends_on:
+      - agentservice
     networks:
       - mynetwork
 

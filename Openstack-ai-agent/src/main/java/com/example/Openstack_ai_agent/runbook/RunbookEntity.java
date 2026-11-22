@@ -55,6 +55,12 @@ public class RunbookEntity {
         return entity;
     }
 
+    public static RunbookEntity createPublished(String name, Map<String, Object> matchCriteria) {
+        RunbookEntity entity = createDraft(name, matchCriteria);
+        entity.status = RunbookStatus.PUBLISHED;
+        return entity;
+    }
+
     int applyNewDraftVersion(String updatedName, Map<String, Object> updatedMatchCriteria) {
         if (this.status == RunbookStatus.ARCHIVED) {
             throw new RunbookConflictException("Archived runbook " + id + " cannot be edited");
