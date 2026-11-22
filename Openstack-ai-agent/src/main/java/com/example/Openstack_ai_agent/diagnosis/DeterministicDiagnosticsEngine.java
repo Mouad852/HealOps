@@ -38,7 +38,7 @@ public class DeterministicDiagnosticsEngine {
             "(?i)(?:restart[_\\s]?count|restarts)\"?\\s*[:=]\\s*\"?(\\d+)"
     );
     private static final Pattern ERROR_RATE_PATTERN = Pattern.compile(
-            "(?i)error[_\\s]?rate(?:_percent)?\"?\\s*[:=]\\s*\"?(\\d+(?:\\.\\d+)?)%?"
+            "(?i)(error[_\\s]?ratio|error[_\\s]?rate(?:_percent)?)\"?\\s*[:=]\\s*\"?(\\d+(?:\\.\\d+)?)\\s*(%)?"
     );
     private static final Pattern LATENCY_MS_PATTERN = Pattern.compile(
             "(?i)(?:latency_ms|p99_latency_ms|p99|latency)\"?\\s*[:=]\\s*\"?(\\d+(?:\\.\\d+)?)\\s*(ms|s)?"
@@ -86,6 +86,8 @@ public class DeterministicDiagnosticsEngine {
         List<UUID> memorySaturationIds = new ArrayList<>();
 
         String workloadStatus = null;
+        boolean hasExplicitHealthConfirmation = false;
+        boolean hasStartingHealth = false;
         Integer maxRestartCount = null;
         Double maxErrorRatePercent = null;
         Double maxLatencyMs = null;
@@ -129,20 +131,37 @@ public class DeterministicDiagnosticsEngine {
                 probeFailureIds.add(item.id());
             }
             if (containsAny(lower,
-                    "status=exited", "status: exited", "container exited", "state=exited", "state: exited",
-                    "status=dead", "status: dead", "status=stopped", "status: stopped",
+                    "status=exited", "status: exited", "\"status\":\"exited\"", "container exited",
+                    "state=exited", "state: exited",
+                    "status=dead", "status: dead", "\"status\":\"dead\"",
+                    "status=stopped", "status: stopped", "\"status\":\"stopped\"",
+                    "status=restarting", "\"status\":\"restarting\"",
+                    "\"status\":\"not_found\"", "\"containerfound\":false",
                     "status=down", "status: down", "status=failed", "status: failed",
+                    "\"health\":\"unhealthy\"", "health=unhealthy", "health: unhealthy",
                     "pod_phase=failed", "notready", "0/1", "unhealthy",
                     "service down", "service_status=down", "state=down", "state: down",
                     "failed to start", "inactive (dead)")) {
                 workloadUnhealthyIds.add(item.id());
                 workloadStatus = prioritizeStatus(workloadStatus, "Unhealthy");
-            } else if (workloadStatus == null && containsAny(lower,
-                    "status=running", "status: running", "\"status\":\"running\"",
-                    "phase=running", "phase: running", "\"phase\":\"running\"",
-                    "active (running)", "\"healthy\":true", "healthy=true", "ready=true", "ready\":true",
-                    "\"ready\":\"1/1\"", "\"ready\":\"2/2\"", "\"ready\":\"3/3\"")) {
-                workloadStatus = "Running";
+            } else {
+                boolean itemStartingHealth = containsAny(lower, "\"health\":\"starting\"", "health=starting", "health: starting");
+                if (itemStartingHealth) {
+                    hasStartingHealth = true;
+                }
+                if (!itemStartingHealth && containsAny(lower,
+                        "\"health\":\"healthy\"", "health=healthy", "health: healthy",
+                        "\"healthy\":true", "healthy=true", "ready=true", "\"ready\":true",
+                        "active (running)", "\"ready\":\"1/1\"", "\"ready\":\"2/2\"", "\"ready\":\"3/3\"")) {
+                    hasExplicitHealthConfirmation = true;
+                }
+                if (workloadStatus == null && containsAny(lower,
+                        "status=running", "status: running", "\"status\":\"running\"",
+                        "phase=running", "phase: running", "\"phase\":\"running\"",
+                        "active (running)", "\"healthy\":true", "healthy=true", "ready=true", "ready\":true",
+                        "\"ready\":\"1/1\"", "\"ready\":\"2/2\"", "\"ready\":\"3/3\"")) {
+                    workloadStatus = "Running";
+                }
             }
 
             Integer restarts = extractInt(RESTART_COUNT_PATTERN, combined);
@@ -153,13 +172,19 @@ public class DeterministicDiagnosticsEngine {
                 }
             }
 
-            Double errorRate = extractDouble(ERROR_RATE_PATTERN, combined);
+            Double errorRate = extractErrorRatePercent(combined);
             if (errorRate != null) {
                 maxErrorRatePercent = maxErrorRatePercent == null ? errorRate : Math.max(maxErrorRatePercent, errorRate);
                 if (errorRate >= 5.0) {
                     highErrorRateIds.add(item.id());
                 }
-            } else if (containsAny(lower, "elevated error rate", "high error rate", "http 500", "5xx spike", "status=500")) {
+            } else if (containsAny(lower,
+                    "elevated error rate", "high error rate", "http 500", "5xx spike", "status=500",
+                    "\"status\":500", "\"status_code\":500", "\"http.status_code\":500",
+                    "500 internal server error", "synthetic demo failure", "synthetic demo workload request failed")
+                    || (item.type() != EvidenceType.ALERT_CONTEXT && containsAny(lower,
+                    "\"level\":\"error\"", "\"level\": \"error\"", "level=error", "[error]",
+                    "\"severity\":\"error\"", "\"severity\": \"error\""))) {
                 highErrorRateIds.add(item.id());
             }
 
@@ -326,7 +351,15 @@ public class DeterministicDiagnosticsEngine {
                 || maxLatencyMs != null
                 || maxCpuPercent != null
                 || maxMemoryPercent != null;
-        String healthStatus = computeHealthStatus(findings, telemetryStatus, incident.severity(), workloadStatus, hasNormalizedMetricSignal);
+        String healthStatus = computeHealthStatus(
+                findings,
+                telemetryStatus,
+                incident.severity(),
+                workloadStatus,
+                hasExplicitHealthConfirmation,
+                hasStartingHealth,
+                hasNormalizedMetricSignal
+        );
 
         List<DiagnosisHypothesis> hypotheses = buildHypotheses(incident, orderedEvidence, findings, telemetryStatus);
         BigDecimal overallConfidence = computeOverallConfidence(hypotheses, collectionErrorIds.size(), runtimeEvidenceCount);
@@ -546,6 +579,8 @@ public class DeterministicDiagnosticsEngine {
             String telemetryStatus,
             IncidentSeverity severity,
             String workloadStatus,
+            boolean hasExplicitHealthConfirmation,
+            boolean hasStartingHealth,
             boolean hasNormalizedMetricSignal
     ) {
         boolean hasCriticalOrUnhealthy = findings.stream().anyMatch(f ->
@@ -563,7 +598,7 @@ public class DeterministicDiagnosticsEngine {
         if (!"COMPLETE".equals(telemetryStatus)) {
             return "UNKNOWN";
         }
-        if (findings.isEmpty() && ("Running".equals(workloadStatus) || hasNormalizedMetricSignal)) {
+        if (findings.isEmpty() && (hasExplicitHealthConfirmation || (!hasStartingHealth && "Running".equals(workloadStatus) && hasNormalizedMetricSignal))) {
             return "HEALTHY";
         }
         return (severity == IncidentSeverity.CRITICAL || severity == IncidentSeverity.HIGH) ? "DEGRADED" : "UNKNOWN";
@@ -619,13 +654,25 @@ public class DeterministicDiagnosticsEngine {
         return best;
     }
 
-    private static Double extractDouble(Pattern pattern, String text) {
-        Matcher matcher = pattern.matcher(text);
+    private static Double extractErrorRatePercent(String text) {
+        Matcher matcher = ERROR_RATE_PATTERN.matcher(text);
         Double best = null;
         while (matcher.find()) {
+            String key = matcher.group(1);
+            String numeric = matcher.group(2);
+            String percentSign = matcher.group(3);
+            if (numeric == null) {
+                continue;
+            }
             try {
-                double val = Double.parseDouble(matcher.group(1));
-                best = best == null ? val : Math.max(best, val);
+                double val = Double.parseDouble(numeric);
+                String lowerKey = key == null ? "" : key.toLowerCase(Locale.ROOT);
+                boolean isPercentExplicit = percentSign != null || lowerKey.contains("percent");
+                boolean isRatio = !isPercentExplicit && (lowerKey.contains("ratio") || (val > 0.0 && val <= 1.0));
+                double percent = isRatio ? val * 100.0 : val;
+                if (percent >= 0.0 && percent <= 100.0) {
+                    best = best == null ? percent : Math.max(best, percent);
+                }
             } catch (NumberFormatException ignored) {
             }
         }

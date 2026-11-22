@@ -13,19 +13,30 @@ abstract class AdapterEvidenceCollectorSupport {
             IncidentResponse incident,
             JsonNode response
     ) {
+        return candidate(type, source, incident.service(), incident, response.toString(), Map.of("adapter", source));
+    }
+
+    protected EvidenceCandidate candidate(
+            EvidenceType type,
+            String source,
+            String target,
+            IncidentResponse incident,
+            String rawContent,
+            Map<String, String> metadata
+    ) {
         OffsetDateTime collectedAt = OffsetDateTime.now();
-        String serialized = response.toString();
-        String excerpt = serialized.length() <= 8192 ? serialized : serialized.substring(0, 8192);
+        String safeContent = rawContent == null ? "" : rawContent;
+        String excerpt = safeContent.length() <= 8192 ? safeContent : safeContent.substring(0, 8192);
         return new EvidenceCandidate(
                 type,
                 source,
-                incident.service(),
+                target != null && !target.isBlank() ? target : incident.service(),
                 collectedAt,
                 incident.startedAt(),
                 collectedAt,
                 incident.traceId(),
                 excerpt,
-                Map.of("adapter", source)
+                metadata == null || metadata.isEmpty() ? Map.of("adapter", source) : Map.copyOf(metadata)
         );
     }
 

@@ -37,6 +37,14 @@ public class EvidenceAdapterClient {
         return get(dockerClient, "/docker/list?all=true");
     }
 
+    public JsonNode dockerContainerLogs(String containerId, int tail) {
+        return get(dockerClient, "/docker/{containerId}/logs?tail={tail}&since_started=true", containerId, tail);
+    }
+
+    public JsonNode dockerContainerStats(String containerId) {
+        return get(dockerClient, "/docker/{containerId}/stats", containerId);
+    }
+
     public JsonNode prometheusContainerMetrics(String service) {
         return get(prometheusClient, "/metrics/container/{service}", service);
     }

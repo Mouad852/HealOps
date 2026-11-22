@@ -18,6 +18,7 @@ import org.springframework.transaction.annotation.Propagation;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -31,6 +32,8 @@ import java.util.Set;
 @Component
 public class RemediationOrchestrationListener {
     private static final Logger log = LoggerFactory.getLogger(RemediationOrchestrationListener.class);
+    private static final int MAX_STARTING_HEALTH_RETRIES = 3;
+    private static final Duration STARTING_HEALTH_RETRY_DELAY = Duration.ofSeconds(2);
 
     private final IncidentService incidentService;
     private final RemediationOrchestrationService orchestrationService;
@@ -138,7 +141,8 @@ public class RemediationOrchestrationListener {
             return;
         }
 
-        waitStabilizationWindow(verificationProperties.getStabilizationDelay());
+        Duration stabilizationDelay = verificationProperties.getStabilizationDelay();
+        waitStabilizationWindow(stabilizationDelay);
 
         List<EvidenceItemResponse> freshEvidence = evidenceCollectionService.collectRuntimeEvidence(
                 event.incidentId(),
@@ -147,6 +151,23 @@ public class RemediationOrchestrationListener {
         CorrelationService.CorrelationSummary correlation = correlationService.correlate(current, freshEvidence);
         DeterministicDiagnosticsEngine.DeterministicDiagnosticsResult diagnostics =
                 diagnosticsEngine.diagnose(current, freshEvidence, correlation);
+
+        for (int attempt = 0; attempt < MAX_STARTING_HEALTH_RETRIES && isStartingHealthOnly(diagnostics, freshEvidence); attempt++) {
+            if (hasPositiveDelay(stabilizationDelay)) {
+                waitStabilizationWindow(STARTING_HEALTH_RETRY_DELAY);
+            }
+            if (Thread.currentThread().isInterrupted()) {
+                break;
+            }
+            log.debug("Verification for incident {} saw starting container healthcheck (attempt {}/{}); re-collecting runtime evidence",
+                    event.incidentId(), attempt + 1, MAX_STARTING_HEALTH_RETRIES);
+            freshEvidence = evidenceCollectionService.collectRuntimeEvidence(
+                    event.incidentId(),
+                    Set.of(IncidentStatus.VERIFYING)
+            );
+            correlation = correlationService.correlate(current, freshEvidence);
+            diagnostics = diagnosticsEngine.diagnose(current, freshEvidence, correlation);
+        }
 
         orchestrationService.recordVerificationAndTransition(
                 event.incidentId(),
@@ -225,8 +246,48 @@ public class RemediationOrchestrationListener {
         );
     }
 
+    private boolean isStartingHealthOnly(
+            DeterministicDiagnosticsEngine.DeterministicDiagnosticsResult diagnostics,
+            List<EvidenceItemResponse> evidence
+    ) {
+        if (diagnostics == null || diagnostics.healthSignals() == null) {
+            return false;
+        }
+        DeterministicDiagnosticsEngine.ExtractedHealthSignals signals = diagnostics.healthSignals();
+        if (!"Running".equals(signals.workloadStatus())
+                || "HEALTHY".equals(signals.healthStatus())
+                || !diagnostics.findings().isEmpty()) {
+            return false;
+        }
+        if (evidence == null || evidence.isEmpty()) {
+            return false;
+        }
+        return evidence.stream().anyMatch(RemediationOrchestrationListener::containsStartingHealth);
+    }
+
+    private static boolean containsStartingHealth(EvidenceItemResponse item) {
+        if (item == null) {
+            return false;
+        }
+        if (item.metadata() != null && "starting".equalsIgnoreCase(item.metadata().get("health"))) {
+            return true;
+        }
+        String excerpt = item.excerpt();
+        if (excerpt == null) {
+            return false;
+        }
+        String lower = excerpt.toLowerCase(Locale.ROOT);
+        return lower.contains("\"health\":\"starting\"")
+                || lower.contains("health=starting")
+                || lower.contains("health: starting");
+    }
+
+    private static boolean hasPositiveDelay(Duration delay) {
+        return delay != null && !delay.isZero() && !delay.isNegative();
+    }
+
     private void waitStabilizationWindow(Duration delay) {
-        if (delay == null || delay.isZero() || delay.isNegative()) {
+        if (!hasPositiveDelay(delay)) {
             return;
         }
         try {

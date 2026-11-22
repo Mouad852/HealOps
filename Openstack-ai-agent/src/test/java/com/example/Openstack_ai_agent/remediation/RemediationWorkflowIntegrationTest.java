@@ -505,6 +505,74 @@ class RemediationWorkflowIntegrationTest {
         awaitNoIncompletePublications(Duration.ofSeconds(5));
     }
 
+    @Test
+    void dockerStartingHealthcheckRetriesAndClosesIncidentWithHealthyAfterSnapshot() throws Exception {
+        JsonNode unhealthyDocker = objectMapper.readTree(
+                "[{\"id\":\"dw1\",\"name\":\"healops-demo-workload\",\"status\":\"running\",\"health\":\"unhealthy\"}]"
+        );
+        JsonNode startingDocker = objectMapper.readTree(
+                "[{\"id\":\"dw1\",\"name\":\"healops-demo-workload\",\"status\":\"running\",\"health\":\"starting\"}]"
+        );
+        JsonNode healthyDocker = objectMapper.readTree(
+                "[{\"id\":\"dw1\",\"name\":\"healops-demo-workload\",\"status\":\"running\",\"health\":\"healthy\"}]"
+        );
+        JsonNode stats = objectMapper.readTree(
+                "{\"status\":\"success\",\"container_id\":\"healops-demo-workload\",\"raw\":{\"cpu_total\":12000,\"memory_usage\":33554432,\"memory_limit\":134217728,\"memory_percent\":25.0}}"
+        );
+        JsonNode errorLogs = objectMapper.readTree(
+                "{\"logs\":\"{\\\"level\\\":\\\"ERROR\\\",\\\"message\\\":\\\"Synthetic demo workload request failed\\\"}\"}"
+        );
+        JsonNode cleanLogs = objectMapper.readTree(
+                "{\"logs\":\"{\\\"level\\\":\\\"INFO\\\",\\\"message\\\":\\\"Demo workload ready\\\"}\"}"
+        );
+
+        when(evidenceAdapterClient.dockerContainers())
+                .thenReturn(unhealthyDocker)
+                .thenReturn(startingDocker)
+                .thenReturn(healthyDocker);
+        when(evidenceAdapterClient.dockerContainerStats(eq("healops-demo-workload"))).thenReturn(stats);
+        when(evidenceAdapterClient.dockerContainerLogs(eq("healops-demo-workload"), eq(50)))
+                .thenReturn(errorLogs)
+                .thenReturn(cleanLogs);
+
+        UUID incidentId = createIncident(
+                "fp-docker-starting-" + UUID.randomUUID(),
+                "local",
+                "demo-workload",
+                Map.of("runtime", "docker", "container", "healops-demo-workload"),
+                Map.of("summary", "demo-workload healthcheck failing")
+        );
+
+        awaitStatus(incidentId, IncidentStatus.AWAITING_APPROVAL, Duration.ofSeconds(10));
+        ProposedActionResponse action = diagnosisPersistenceService.findProposedActions(incidentId).getFirst();
+        assertThat(action.actionType()).isEqualTo(ActionType.RESTART_CONTAINER);
+
+        mockMvc.perform(post("/api/v1/approvals/{actionId}/decisions", action.id())
+                        .with(csrf())
+                        .with(user("operator").authorities(
+                                () -> "ROLE_OPERATOR", () -> "incident:read", () -> "incident:approve", () -> "env:local"))
+                        .header("Idempotency-Key", "approve-docker-starting-" + action.id())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "decision": "APPROVED",
+                                  "reason": "Restart container and verify starting->healthy transition",
+                                  "expectedVersion": 0
+                                }
+                                """))
+                .andExpect(status().isCreated());
+
+        IncidentResponse closed = awaitStatus(incidentId, IncidentStatus.CLOSED, Duration.ofSeconds(10));
+        assertThat(closed.status()).isEqualTo(IncidentStatus.CLOSED);
+
+        HealthComparisonResponse health = healthSnapshotService.getHealthComparisons(incidentId);
+        assertThat(health.after()).isNotNull();
+        assertThat(health.after().signals().get("healthStatus")).isEqualTo("HEALTHY");
+        assertThat(health.after().signals().get("memoryPercent")).isEqualTo(25.0);
+
+        awaitNoIncompletePublications(Duration.ofSeconds(5));
+    }
+
     private UUID createIncident(
             String fingerprint,
             String environmentId,

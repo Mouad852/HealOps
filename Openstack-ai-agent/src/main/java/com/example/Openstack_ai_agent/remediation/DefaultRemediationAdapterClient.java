@@ -2,6 +2,8 @@ package com.example.Openstack_ai_agent.remediation;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -15,9 +17,10 @@ import java.util.concurrent.TimeoutException;
 
 /**
  * Spring-managed {@link WebClient.Builder} adapter client for typed remediation calls.
- * When {@code healops.remediation.live-adapter-enabled=false}, executes deterministic
+ * When {@code healops.remediation.live-adapter-enabled=false} (or for isolated {@code demo-*}
+ * Kubernetes sandbox namespaces under the {@code demo} Spring profile), executes deterministic
  * in-process simulation (tracking Kubernetes deployment replicas/revisions for pre-state
- * and rollback verification) so automated tests do not require live Docker/K8s/OpenStack daemons.
+ * and rollback verification) so automated tests and demo rollbacks do not require a live cluster.
  */
 @Component
 public class DefaultRemediationAdapterClient implements RemediationAdapterClient {
@@ -29,6 +32,7 @@ public class DefaultRemediationAdapterClient implements RemediationAdapterClient
     private final WebClient kubernetesClient;
     private final WebClient openstackClient;
     private final RemediationProperties properties;
+    private final boolean demoProfileActive;
 
     private final Map<String, Integer> simulatedReplicas = new ConcurrentHashMap<>();
     private final Map<String, Integer> simulatedRevisions = new ConcurrentHashMap<>();
@@ -36,14 +40,21 @@ public class DefaultRemediationAdapterClient implements RemediationAdapterClient
     public DefaultRemediationAdapterClient(
             WebClient.Builder builder,
             RemediationProperties properties,
+            Environment springEnvironment,
             @Value("${mcp.server1.url}") String dockerBaseUrl,
             @Value("${mcp.server3.url}") String kubernetesBaseUrl,
             @Value("${mcp.server4.url}") String openstackBaseUrl
     ) {
         this.properties = properties;
+        this.demoProfileActive = springEnvironment != null && springEnvironment.acceptsProfiles(Profiles.of("demo"));
         this.dockerClient = configured(builder, dockerBaseUrl, properties);
         this.kubernetesClient = configured(builder, kubernetesBaseUrl, properties);
         this.openstackClient = configured(builder, openstackBaseUrl, properties);
+    }
+
+    private boolean useSimulatedK8s(String namespace) {
+        return !properties.isLiveAdapterEnabled()
+                || (demoProfileActive && namespace != null && namespace.startsWith("demo-"));
     }
 
     @Override
@@ -101,7 +112,7 @@ public class DefaultRemediationAdapterClient implements RemediationAdapterClient
 
     @Override
     public Optional<Integer> getK8sDeploymentReplicas(String namespace, String deployment, Duration timeout) {
-        if (!properties.isLiveAdapterEnabled()) {
+        if (useSimulatedK8s(namespace)) {
             String key = namespace + "/" + deployment;
             return Optional.of(simulatedReplicas.computeIfAbsent(key, ignored -> DEFAULT_SIMULATED_REPLICAS));
         }
@@ -136,7 +147,7 @@ public class DefaultRemediationAdapterClient implements RemediationAdapterClient
             String idempotencyKey,
             Duration timeout
     ) {
-        if (!properties.isLiveAdapterEnabled()) {
+        if (useSimulatedK8s(namespace)) {
             String key = namespace + "/" + deployment;
             int prior = simulatedReplicas.getOrDefault(key, DEFAULT_SIMULATED_REPLICAS);
             simulatedReplicas.put(key, replicas);
@@ -167,7 +178,7 @@ public class DefaultRemediationAdapterClient implements RemediationAdapterClient
 
     @Override
     public Optional<Integer> getK8sDeploymentRevision(String namespace, String deployment, Duration timeout) {
-        if (!properties.isLiveAdapterEnabled()) {
+        if (useSimulatedK8s(namespace)) {
             String key = namespace + "/" + deployment;
             return Optional.of(simulatedRevisions.computeIfAbsent(key, ignored -> DEFAULT_SIMULATED_REVISION));
         }
@@ -201,7 +212,7 @@ public class DefaultRemediationAdapterClient implements RemediationAdapterClient
             String idempotencyKey,
             Duration timeout
     ) {
-        if (!properties.isLiveAdapterEnabled()) {
+        if (useSimulatedK8s(namespace)) {
             String key = namespace + "/" + deployment;
             int prior = simulatedRevisions.getOrDefault(key, DEFAULT_SIMULATED_REVISION);
             int target = revision != null ? revision : Math.max(1, prior - 1);

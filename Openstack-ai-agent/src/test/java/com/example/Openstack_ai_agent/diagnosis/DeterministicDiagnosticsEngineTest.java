@@ -208,6 +208,96 @@ class DeterministicDiagnosticsEngineTest {
                 .doesNotContain("CPU_SATURATION");
     }
 
+    @Test
+    void recognizesDecimalErrorRatiosAndRequiresRealRuntimeHealthSignals() {
+        OffsetDateTime now = OffsetDateTime.parse("2026-01-01T10:00:00Z");
+        IncidentResponse dockerIncident = incident(
+                "demo-workload",
+                Map.of("runtime", "docker", "container", "healops-demo-workload"),
+                Map.of()
+        );
+
+        // 1. Bare running container without healthcheck or metrics is NOT marked HEALTHY
+        EvidenceItemResponse bareRunning = evidence(
+                UUID.randomUUID(), EvidenceType.METRIC, "docker",
+                "{\"container\":\"healops-demo-workload\",\"status\":\"running\"}", now, Map.of()
+        );
+        var bareResult = engine.diagnose(dockerIncident, List.of(bareRunning), correlationService.correlate(dockerIncident, List.of(bareRunning)));
+        assertThat(bareResult.healthSignals().healthStatus()).isNotEqualTo("HEALTHY");
+
+        // 2. Decimal error_ratio=0.7 (without %) triggers HIGH_ERROR_RATE at 70%
+        EvidenceItemResponse ratioMetric = evidence(
+                UUID.randomUUID(), EvidenceType.METRIC, "prometheus",
+                "demo_workload_error_ratio=0.7", now, Map.of()
+        );
+        var ratioResult = engine.diagnose(dockerIncident, List.of(ratioMetric), correlationService.correlate(dockerIncident, List.of(ratioMetric)));
+        assertThat(ratioResult.healthSignals().errorRatePercent()).isEqualTo(70.0);
+        assertThat(ratioResult.findings())
+                .extracting(DeterministicDiagnosticsEngine.DeterministicFinding::code)
+                .contains("HIGH_ERROR_RATE");
+        assertThat(ratioResult.healthSignals().healthStatus()).isEqualTo("UNHEALTHY");
+
+        // 3. Running+healthy container with ERROR logs is marked UNHEALTHY, not HEALTHY
+        EvidenceItemResponse healthyContainer = evidence(
+                UUID.randomUUID(), EvidenceType.METRIC, "docker",
+                "{\"container\":\"healops-demo-workload\",\"status\":\"running\",\"health\":\"healthy\"}", now, Map.of()
+        );
+        EvidenceItemResponse errorLogs = evidence(
+                UUID.randomUUID(), EvidenceType.LOG, "docker",
+                "{\"level\":\"ERROR\",\"message\":\"Synthetic demo workload request failed\"}", now, Map.of()
+        );
+        var logsResult = engine.diagnose(
+                dockerIncident,
+                List.of(healthyContainer, errorLogs),
+                correlationService.correlate(dockerIncident, List.of(healthyContainer, errorLogs))
+        );
+        assertThat(logsResult.findings())
+                .extracting(DeterministicDiagnosticsEngine.DeterministicFinding::code)
+                .contains("HIGH_ERROR_RATE");
+        assertThat(logsResult.healthSignals().healthStatus()).isEqualTo("UNHEALTHY");
+
+        // 4. Running+healthy container with clean logs and low percentage error_rate=0.5% is HEALTHY
+        EvidenceItemResponse cleanLogs = evidence(
+                UUID.randomUUID(), EvidenceType.LOG, "docker",
+                "{\"level\":\"INFO\",\"message\":\"Demo workload request succeeded\"} error_rate=0.5%", now, Map.of()
+        );
+        var cleanResult = engine.diagnose(
+                dockerIncident,
+                List.of(healthyContainer, cleanLogs),
+                correlationService.correlate(dockerIncident, List.of(healthyContainer, cleanLogs))
+        );
+        assertThat(cleanResult.healthSignals().errorRatePercent()).isEqualTo(0.5);
+        assertThat(cleanResult.healthSignals().healthStatus()).isEqualTo("HEALTHY");
+
+        // 5. Running container with health="starting" is NOT marked HEALTHY even when memory_percent is present
+        EvidenceItemResponse startingWithMemory = evidence(
+                UUID.randomUUID(), EvidenceType.METRIC, "docker",
+                "{\"container\":\"healops-demo-workload\",\"status\":\"running\",\"health\":\"starting\",\"stats\":{\"memory_percent\":22.5}}",
+                now, Map.of("status", "running", "health", "starting")
+        );
+        var startingResult = engine.diagnose(
+                dockerIncident,
+                List.of(startingWithMemory, cleanLogs),
+                correlationService.correlate(dockerIncident, List.of(startingWithMemory, cleanLogs))
+        );
+        assertThat(startingResult.healthSignals().workloadStatus()).isEqualTo("Running");
+        assertThat(startingResult.healthSignals().healthStatus()).isNotEqualTo("HEALTHY");
+
+        // 6. Running container without a Docker healthcheck IS marked HEALTHY when normalized memory_percent is present and logs are clean
+        EvidenceItemResponse noHealthcheckWithMemory = evidence(
+                UUID.randomUUID(), EvidenceType.METRIC, "docker",
+                "{\"container\":\"healops-demo-workload\",\"status\":\"running\",\"stats\":{\"memory_percent\":22.5}}",
+                now, Map.of("status", "running")
+        );
+        var noHcResult = engine.diagnose(
+                dockerIncident,
+                List.of(noHealthcheckWithMemory, cleanLogs),
+                correlationService.correlate(dockerIncident, List.of(noHealthcheckWithMemory, cleanLogs))
+        );
+        assertThat(noHcResult.healthSignals().workloadStatus()).isEqualTo("Running");
+        assertThat(noHcResult.healthSignals().healthStatus()).isEqualTo("HEALTHY");
+    }
+
     private IncidentResponse incident(String service, Map<String, String> labels, Map<String, String> annotations) {
         OffsetDateTime now = OffsetDateTime.parse("2026-01-01T10:00:00Z");
         return new IncidentResponse(
