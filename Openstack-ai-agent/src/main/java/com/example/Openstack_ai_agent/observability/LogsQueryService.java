@@ -8,9 +8,12 @@ import com.example.Openstack_ai_agent.evidence.RedactionStatus;
 import com.example.Openstack_ai_agent.incident.IncidentEntity;
 import com.example.Openstack_ai_agent.incident.IncidentRepository;
 import com.fasterxml.jackson.databind.JsonNode;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionOperations;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -34,6 +37,7 @@ public class LogsQueryService {
     private final IncidentRepository incidentRepository;
     private final EvidenceItemRepository evidenceItemRepository;
     private final ConversationSanitizer sanitizer;
+    private final TransactionOperations readOnlyTx;
 
     public LogsQueryService(
             ObservabilityQueryValidator validator,
@@ -42,14 +46,43 @@ public class LogsQueryService {
             EvidenceItemRepository evidenceItemRepository,
             ConversationSanitizer sanitizer
     ) {
+        this(validator, backendClient, incidentRepository, evidenceItemRepository, sanitizer, TransactionOperations.withoutTransaction());
+    }
+
+    @Autowired
+    public LogsQueryService(
+            ObservabilityQueryValidator validator,
+            ObservabilityBackendClient backendClient,
+            IncidentRepository incidentRepository,
+            EvidenceItemRepository evidenceItemRepository,
+            ConversationSanitizer sanitizer,
+            PlatformTransactionManager transactionManager
+    ) {
+        this(validator, backendClient, incidentRepository, evidenceItemRepository, sanitizer, readOnlyTemplate(transactionManager));
+    }
+
+    private LogsQueryService(
+            ObservabilityQueryValidator validator,
+            ObservabilityBackendClient backendClient,
+            IncidentRepository incidentRepository,
+            EvidenceItemRepository evidenceItemRepository,
+            ConversationSanitizer sanitizer,
+            TransactionOperations readOnlyTx
+    ) {
         this.validator = validator;
         this.backendClient = backendClient;
         this.incidentRepository = incidentRepository;
         this.evidenceItemRepository = evidenceItemRepository;
         this.sanitizer = sanitizer;
+        this.readOnlyTx = readOnlyTx;
     }
 
-    @Transactional(readOnly = true)
+    private static TransactionOperations readOnlyTemplate(PlatformTransactionManager transactionManager) {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setReadOnly(true);
+        return template;
+    }
+
     public LogQueryResponse queryLogs(
             String environmentId,
             String service,
@@ -69,12 +102,24 @@ public class LogsQueryService {
         if (backendClient.isLiveQueryEnabled() && incidentId == null) {
             String selector = buildStrictLokiSelector(authorizedEnv, validatedService, validatedTraceId);
             Optional<JsonNode> lokiResponse = backendClient.queryLokiRange(selector, range.from(), range.to(), effectiveLimit + 1);
-            if (lokiResponse.isPresent()) {
-                List<LogQueryResponse.LogRecordDto> lokiRecords = parseLokiRecords(
-                        lokiResponse.get(),
-                        validatedService,
-                        validatedTraceId
+            List<LogQueryResponse.LogRecordDto> lokiRecords = lokiResponse
+                    .map(json -> parseLokiRecords(json, validatedService, validatedTraceId))
+                    .orElse(List.of());
+
+            if (lokiRecords.isEmpty() && validatedService != null) {
+                String serviceOnlySelector = buildServiceOnlyLokiSelector(validatedService, validatedTraceId);
+                Optional<JsonNode> fallbackLoki = backendClient.queryLokiRange(
+                        serviceOnlySelector,
+                        range.from(),
+                        range.to(),
+                        effectiveLimit + 1
                 );
+                if (fallbackLoki.isPresent()) {
+                    lokiRecords = parseLokiRecords(fallbackLoki.get(), validatedService, validatedTraceId);
+                }
+            }
+
+            if (!lokiRecords.isEmpty()) {
                 boolean truncated = lokiRecords.size() > effectiveLimit;
                 List<LogQueryResponse.LogRecordDto> bounded = truncated
                         ? lokiRecords.subList(0, effectiveLimit)
@@ -121,6 +166,14 @@ public class LogsQueryService {
             matchers.add("service_name=\"" + service + "\"");
         }
         String selector = "{" + String.join(", ", matchers) + "}";
+        if (traceId != null) {
+            selector = selector + " |= \"" + traceId + "\"";
+        }
+        return selector;
+    }
+
+    private String buildServiceOnlyLokiSelector(String service, String traceId) {
+        String selector = "{service_name=\"" + service + "\"}";
         if (traceId != null) {
             selector = selector + " |= \"" + traceId + "\"";
         }
@@ -187,69 +240,81 @@ public class LogsQueryService {
             String traceId,
             ObservabilityQueryValidator.TimeRange range
     ) {
-        Map<UUID, IncidentEntity> envIncidents = incidentRepository.findAll().stream()
-                .filter(i -> environmentId.equals(i.getEnvironmentId()))
-                .filter(i -> service == null || service.equals(i.getService()))
-                .filter(i -> incidentId == null || incidentId.equals(i.getId()))
-                .collect(Collectors.toMap(IncidentEntity::getId, i -> i));
-
-        if (envIncidents.isEmpty()) {
-            return List.of();
-        }
-
-        List<EvidenceItemEntity> items = incidentId != null
-                ? evidenceItemRepository.findByIncidentIdOrderByObservedAtDesc(incidentId)
-                : evidenceItemRepository.findAll();
-
-        List<LogQueryResponse.LogRecordDto> records = new ArrayList<>();
-        for (EvidenceItemEntity item : items) {
-            IncidentEntity incident = envIncidents.get(item.getIncidentId());
-            if (incident == null) {
-                continue;
-            }
-            OffsetDateTime observedAt = item.getObservedAt();
-            if (observedAt == null || observedAt.isBefore(range.from()) || observedAt.isAfter(range.to())) {
-                continue;
-            }
-            String effectiveTraceId = item.getTraceId() != null ? item.getTraceId() : incident.getTraceId();
-            if (traceId != null && !traceId.equals(effectiveTraceId)) {
-                continue;
+        return readOnlyTx.execute(status -> {
+            List<IncidentEntity> scopedIncidents;
+            if (incidentId != null) {
+                scopedIncidents = incidentRepository.findById(incidentId)
+                        .filter(i -> environmentId.equals(i.getEnvironmentId()))
+                        .filter(i -> service == null || service.equals(i.getService()))
+                        .map(List::of)
+                        .orElse(List.of());
+            } else if (service != null) {
+                scopedIncidents = incidentRepository.findByEnvironmentIdAndService(environmentId, service);
+            } else {
+                scopedIncidents = incidentRepository.findByEnvironmentId(environmentId);
             }
 
-            String sanitized = sanitizeMessage(item.getExcerpt());
-            boolean redacted = item.getRedactionStatus() == RedactionStatus.REDACTED
-                    || !sanitized.equals(truncate(item.getExcerpt()));
+            Map<UUID, IncidentEntity> envIncidents = scopedIncidents.stream()
+                    .collect(Collectors.toMap(IncidentEntity::getId, i -> i));
 
-            Map<String, String> attrs = new LinkedHashMap<>();
-            if (item.getMetadata() != null) {
-                attrs.putAll(item.getMetadata());
-            }
-            attrs.put("evidenceType", item.getType().name());
-            if (item.getTarget() != null) {
-                attrs.put("target", item.getTarget());
+            if (envIncidents.isEmpty()) {
+                return List.of();
             }
 
-            String level = switch (item.getType()) {
-                case COLLECTION_ERROR -> "ERROR";
-                case LOG -> inferLevel(sanitized);
-                default -> "INFO";
-            };
+            List<EvidenceItemEntity> items = incidentId != null
+                    ? evidenceItemRepository.findByIncidentIdOrderByObservedAtDesc(incidentId)
+                    : evidenceItemRepository.findByIncidentIdInOrderByObservedAtDesc(envIncidents.keySet());
 
-            records.add(new LogQueryResponse.LogRecordDto(
-                    observedAt,
-                    incident.getService(),
-                    level,
-                    sanitized,
-                    effectiveTraceId,
-                    incident.getId(),
-                    item.getSource(),
-                    redacted,
-                    attrs
-            ));
-        }
+            List<LogQueryResponse.LogRecordDto> records = new ArrayList<>();
+            for (EvidenceItemEntity item : items) {
+                IncidentEntity incident = envIncidents.get(item.getIncidentId());
+                if (incident == null) {
+                    continue;
+                }
+                OffsetDateTime observedAt = item.getObservedAt();
+                if (observedAt == null || observedAt.isBefore(range.from()) || observedAt.isAfter(range.to())) {
+                    continue;
+                }
+                String effectiveTraceId = item.getTraceId() != null ? item.getTraceId() : incident.getTraceId();
+                if (traceId != null && !traceId.equals(effectiveTraceId)) {
+                    continue;
+                }
 
-        records.sort(Comparator.comparing(LogQueryResponse.LogRecordDto::timestamp).reversed());
-        return records;
+                String sanitized = sanitizeMessage(item.getExcerpt());
+                boolean redacted = item.getRedactionStatus() == RedactionStatus.REDACTED
+                        || !sanitized.equals(truncate(item.getExcerpt()));
+
+                Map<String, String> attrs = new LinkedHashMap<>();
+                if (item.getMetadata() != null) {
+                    attrs.putAll(item.getMetadata());
+                }
+                attrs.put("evidenceType", item.getType().name());
+                if (item.getTarget() != null) {
+                    attrs.put("target", item.getTarget());
+                }
+
+                String level = switch (item.getType()) {
+                    case COLLECTION_ERROR -> "ERROR";
+                    case LOG -> inferLevel(sanitized);
+                    default -> "INFO";
+                };
+
+                records.add(new LogQueryResponse.LogRecordDto(
+                        observedAt,
+                        incident.getService(),
+                        level,
+                        sanitized,
+                        effectiveTraceId,
+                        incident.getId(),
+                        item.getSource(),
+                        redacted,
+                        attrs
+                ));
+            }
+
+            records.sort(Comparator.comparing(LogQueryResponse.LogRecordDto::timestamp).reversed());
+            return records;
+        });
     }
 
     private String sanitizeMessage(String raw) {

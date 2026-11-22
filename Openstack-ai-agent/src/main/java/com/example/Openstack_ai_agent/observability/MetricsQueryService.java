@@ -6,9 +6,12 @@ import com.example.Openstack_ai_agent.diagnosis.HealthSnapshotRepository;
 import com.example.Openstack_ai_agent.incident.IncidentEntity;
 import com.example.Openstack_ai_agent.incident.IncidentRepository;
 import com.fasterxml.jackson.databind.JsonNode;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionOperations;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -30,6 +33,7 @@ public class MetricsQueryService {
     private final ObservabilityBackendClient backendClient;
     private final IncidentRepository incidentRepository;
     private final HealthSnapshotRepository healthSnapshotRepository;
+    private final TransactionOperations readOnlyTx;
 
     public MetricsQueryService(
             ObservabilityQueryValidator validator,
@@ -38,14 +42,43 @@ public class MetricsQueryService {
             IncidentRepository incidentRepository,
             HealthSnapshotRepository healthSnapshotRepository
     ) {
+        this(validator, properties, backendClient, incidentRepository, healthSnapshotRepository, TransactionOperations.withoutTransaction());
+    }
+
+    @Autowired
+    public MetricsQueryService(
+            ObservabilityQueryValidator validator,
+            ObservabilityQueryProperties properties,
+            ObservabilityBackendClient backendClient,
+            IncidentRepository incidentRepository,
+            HealthSnapshotRepository healthSnapshotRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        this(validator, properties, backendClient, incidentRepository, healthSnapshotRepository, readOnlyTemplate(transactionManager));
+    }
+
+    private MetricsQueryService(
+            ObservabilityQueryValidator validator,
+            ObservabilityQueryProperties properties,
+            ObservabilityBackendClient backendClient,
+            IncidentRepository incidentRepository,
+            HealthSnapshotRepository healthSnapshotRepository,
+            TransactionOperations readOnlyTx
+    ) {
         this.validator = validator;
         this.properties = properties;
         this.backendClient = backendClient;
         this.incidentRepository = incidentRepository;
         this.healthSnapshotRepository = healthSnapshotRepository;
+        this.readOnlyTx = readOnlyTx;
     }
 
-    @Transactional(readOnly = true)
+    private static TransactionOperations readOnlyTemplate(PlatformTransactionManager transactionManager) {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setReadOnly(true);
+        return template;
+    }
+
     public MetricRangeResponse queryRange(
             String environmentId,
             String service,
@@ -78,20 +111,23 @@ public class MetricsQueryService {
                         authorizedEnv,
                         allowedMetric
                 );
-                boolean seriesDownsampled = downsampled || parsed.stream().anyMatch(s -> s.points().size() >= properties.getMaxDataPoints());
-                return new MetricRangeResponse(
-                        authorizedEnv,
-                        validatedService,
-                        allowedMetric.metricName(),
-                        allowedMetric.unit(),
-                        range.from(),
-                        range.to(),
-                        requestedStep,
-                        effectiveStep,
-                        seriesDownsampled,
-                        "PROMETHEUS",
-                        parsed
-                );
+                boolean hasPoints = parsed.stream().anyMatch(series -> !series.points().isEmpty());
+                if (hasPoints) {
+                    boolean seriesDownsampled = downsampled || parsed.stream().anyMatch(s -> s.points().size() >= properties.getMaxDataPoints());
+                    return new MetricRangeResponse(
+                            authorizedEnv,
+                            validatedService,
+                            allowedMetric.metricName(),
+                            allowedMetric.unit(),
+                            range.from(),
+                            range.to(),
+                            requestedStep,
+                            effectiveStep,
+                            seriesDownsampled,
+                            "PROMETHEUS",
+                            parsed
+                    );
+                }
             }
         }
 
@@ -183,32 +219,31 @@ public class MetricsQueryService {
             AllowedMetric metric,
             ObservabilityQueryValidator.TimeRange range
     ) {
-        Set<UUID> matchingIncidentIds = incidentRepository.findAll().stream()
-                .filter(i -> environmentId.equals(i.getEnvironmentId()))
-                .filter(i -> service.equals(i.getService()))
-                .map(IncidentEntity::getId)
-                .collect(Collectors.toSet());
-        if (matchingIncidentIds.isEmpty()) {
-            return List.of();
-        }
+        return readOnlyTx.execute(status -> {
+            Set<UUID> matchingIncidentIds = incidentRepository.findByEnvironmentIdAndService(environmentId, service)
+                    .stream()
+                    .map(IncidentEntity::getId)
+                    .collect(Collectors.toSet());
+            if (matchingIncidentIds.isEmpty()) {
+                return List.of();
+            }
 
-        List<MetricRangeResponse.MetricPoint> points = new ArrayList<>();
-        for (HealthSnapshotEntity snapshot : healthSnapshotRepository.findAll()) {
-            if (!matchingIncidentIds.contains(snapshot.getIncidentId())) {
-                continue;
+            List<MetricRangeResponse.MetricPoint> points = new ArrayList<>();
+            for (HealthSnapshotEntity snapshot : healthSnapshotRepository.findByIncidentIdInAndCapturedAtBetweenOrderByCapturedAtAsc(
+                    matchingIncidentIds, range.from(), range.to())) {
+                OffsetDateTime capturedAt = snapshot.getCapturedAt();
+                if (capturedAt == null) {
+                    continue;
+                }
+                Object rawVal = snapshot.getSignals() == null ? null : snapshot.getSignals().get(metric.snapshotSignalKey());
+                Double numeric = toDouble(rawVal);
+                if (numeric != null && !Double.isNaN(numeric) && !Double.isInfinite(numeric)) {
+                    points.add(new MetricRangeResponse.MetricPoint(capturedAt, numeric));
+                }
             }
-            OffsetDateTime capturedAt = snapshot.getCapturedAt();
-            if (capturedAt == null || capturedAt.isBefore(range.from()) || capturedAt.isAfter(range.to())) {
-                continue;
-            }
-            Object rawVal = snapshot.getSignals() == null ? null : snapshot.getSignals().get(metric.snapshotSignalKey());
-            Double numeric = toDouble(rawVal);
-            if (numeric != null && !Double.isNaN(numeric) && !Double.isInfinite(numeric)) {
-                points.add(new MetricRangeResponse.MetricPoint(capturedAt, numeric));
-            }
-        }
-        points.sort(Comparator.comparing(MetricRangeResponse.MetricPoint::timestamp));
-        return points;
+            points.sort(Comparator.comparing(MetricRangeResponse.MetricPoint::timestamp));
+            return points;
+        });
     }
 
     static List<MetricRangeResponse.MetricPoint> downsamplePoints(

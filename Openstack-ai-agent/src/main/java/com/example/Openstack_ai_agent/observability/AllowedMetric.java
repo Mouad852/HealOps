@@ -34,17 +34,24 @@ public enum AllowedMetric {
     }
 
     public String buildPromQl(String validatedService, String validatedEnvironment) {
+        String regexService = validatedService.replace(".", "\\.");
         return switch (this) {
             case CPU_PERCENT ->
-                    "100 * sum(rate(container_cpu_usage_seconds_total{service=\"" + validatedService + "\"}[5m]))";
+                    "(100 * sum(rate(container_cpu_usage_seconds_total{name=~\".*" + regexService + ".*\"}[5m])))"
+                            + " or (100 * sum(rate(container_cpu_usage_seconds_total{service=\"" + validatedService + "\"}[5m])))";
             case MEMORY_PERCENT ->
-                    "100 * sum(container_memory_working_set_bytes{service=\"" + validatedService + "\"}) / clamp_min(sum(container_spec_memory_limit_bytes{service=\"" + validatedService + "\"}), 1)";
+                    "(100 * sum(container_memory_working_set_bytes{name=~\".*" + regexService + ".*\"}) / clamp_min(sum(container_spec_memory_limit_bytes{name=~\".*" + regexService + ".*\"} > 0), 1))"
+                            + " or (100 * sum(container_memory_working_set_bytes{name=~\".*" + regexService + ".*\"}) / clamp_min(scalar(max(machine_memory_bytes)), 1))"
+                            + " or (100 * sum(container_memory_working_set_bytes{service=\"" + validatedService + "\"}) / clamp_min(sum(container_spec_memory_limit_bytes{service=\"" + validatedService + "\"}), 1))";
             case ERROR_RATE ->
-                    "100 * sum(rate(http_server_requests_seconds_count{service=\"" + validatedService + "\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{service=\"" + validatedService + "\"}[5m])), 1)";
+                    "(100 * avg(healops_demo_workload_error_ratio{service=\"" + validatedService + "\"}))"
+                            + " or (100 * sum(rate(http_server_requests_seconds_count{service=\"" + validatedService + "\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{service=\"" + validatedService + "\"}[5m])), 1))";
             case LATENCY_MS ->
-                    "1000 * histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{service=\"" + validatedService + "\"}[5m])) by (le))";
+                    "(avg(healops_demo_workload_latency_ms_milliseconds{service=\"" + validatedService + "\"}))"
+                            + " or (1000 * histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{service=\"" + validatedService + "\"}[5m])) by (le)))";
             case RESTARTS ->
-                    "sum(increase(kube_pod_container_status_restarts_total{service=\"" + validatedService + "\"}[15m]))";
+                    "sum(increase(kube_pod_container_status_restarts_total{service=\"" + validatedService + "\"}[15m]))"
+                            + " or sum(changes(container_start_time_seconds{name=~\".*" + regexService + ".*\"}[15m]))";
         };
     }
 

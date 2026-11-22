@@ -8,9 +8,12 @@ import com.example.Openstack_ai_agent.incident.IncidentEntity;
 import com.example.Openstack_ai_agent.incident.IncidentRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionOperations;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -31,6 +34,7 @@ public class TracesQueryService {
     private final IncidentRepository incidentRepository;
     private final EvidenceItemRepository evidenceItemRepository;
     private final ObjectMapper objectMapper;
+    private final TransactionOperations readOnlyTx;
 
     public TracesQueryService(
             ObservabilityQueryValidator validator,
@@ -41,6 +45,33 @@ public class TracesQueryService {
             EvidenceItemRepository evidenceItemRepository,
             ObjectMapper objectMapper
     ) {
+        this(validator, properties, backendClient, analysisCalculator, incidentRepository, evidenceItemRepository, objectMapper, TransactionOperations.withoutTransaction());
+    }
+
+    @Autowired
+    public TracesQueryService(
+            ObservabilityQueryValidator validator,
+            ObservabilityQueryProperties properties,
+            ObservabilityBackendClient backendClient,
+            TraceAnalysisCalculator analysisCalculator,
+            IncidentRepository incidentRepository,
+            EvidenceItemRepository evidenceItemRepository,
+            ObjectMapper objectMapper,
+            PlatformTransactionManager transactionManager
+    ) {
+        this(validator, properties, backendClient, analysisCalculator, incidentRepository, evidenceItemRepository, objectMapper, readOnlyTemplate(transactionManager));
+    }
+
+    private TracesQueryService(
+            ObservabilityQueryValidator validator,
+            ObservabilityQueryProperties properties,
+            ObservabilityBackendClient backendClient,
+            TraceAnalysisCalculator analysisCalculator,
+            IncidentRepository incidentRepository,
+            EvidenceItemRepository evidenceItemRepository,
+            ObjectMapper objectMapper,
+            TransactionOperations readOnlyTx
+    ) {
         this.validator = validator;
         this.properties = properties;
         this.backendClient = backendClient;
@@ -48,9 +79,15 @@ public class TracesQueryService {
         this.incidentRepository = incidentRepository;
         this.evidenceItemRepository = evidenceItemRepository;
         this.objectMapper = objectMapper;
+        this.readOnlyTx = readOnlyTx;
     }
 
-    @Transactional(readOnly = true)
+    private static TransactionOperations readOnlyTemplate(PlatformTransactionManager transactionManager) {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setReadOnly(true);
+        return template;
+    }
+
     public TraceResponses.TraceListResponse listTraces(
             String environmentId,
             String service,
@@ -65,17 +102,13 @@ public class TracesQueryService {
         int effectiveLimit = validator.resolveTraceLimit(limit);
 
         if (backendClient.isLiveQueryEnabled()) {
-            Optional<JsonNode> liveJson = backendClient.queryJaegerV3Traces(
+            List<TraceAnalysisCalculator.RawSpan> liveSpans = queryLiveSpans(
                     validatedService,
-                    range.from(),
-                    range.to(),
-                    effectiveLimit
+                    range,
+                    effectiveLimit,
+                    effectiveLimit * properties.getMaxSpansPerTrace()
             );
-            if (liveJson.isPresent()) {
-                List<TraceAnalysisCalculator.RawSpan> liveSpans = analysisCalculator.parseJaegerV3OtlpSpans(
-                        liveJson.get(),
-                        effectiveLimit * properties.getMaxSpansPerTrace()
-                );
+            if (!liveSpans.isEmpty()) {
                 List<TraceResponses.TraceSummaryDto> summaries = analysisCalculator.summarizeByTrace(liveSpans);
                 if (summaries.size() > effectiveLimit) {
                     summaries = summaries.subList(0, effectiveLimit);
@@ -107,7 +140,6 @@ public class TracesQueryService {
         );
     }
 
-    @Transactional(readOnly = true)
     public TraceResponses.TraceDetailResponse getTrace(
             String traceId,
             String environmentId,
@@ -136,29 +168,63 @@ public class TracesQueryService {
         return analysisCalculator.buildDetail(validatedTraceId, authorizedEnv, "LOCAL_EVIDENCE", localSpans);
     }
 
-    @Transactional(readOnly = true)
     public List<TraceAnalysisCalculator.RawSpan> collectSpansForTopology(
             String environmentId,
             ObservabilityQueryValidator.TimeRange range
     ) {
         if (backendClient.isLiveQueryEnabled()) {
-            Optional<JsonNode> liveJson = backendClient.queryJaegerV3Traces(
+            int maxSpans = properties.getMaxTraceLimit() * properties.getMaxSpansPerTrace();
+            List<TraceAnalysisCalculator.RawSpan> liveSpans = queryLiveSpans(
                     null,
-                    range.from(),
-                    range.to(),
-                    properties.getMaxTraceLimit()
+                    range,
+                    properties.getMaxTraceLimit(),
+                    maxSpans
             );
-            if (liveJson.isPresent()) {
-                List<TraceAnalysisCalculator.RawSpan> spans = analysisCalculator.parseJaegerV3OtlpSpans(
-                        liveJson.get(),
-                        properties.getMaxTraceLimit() * properties.getMaxSpansPerTrace()
-                );
-                if (!spans.isEmpty()) {
-                    return spans;
-                }
+            if (!liveSpans.isEmpty()) {
+                return liveSpans;
             }
         }
         return collectLocalSpansInRange(environmentId, range);
+    }
+
+    private List<TraceAnalysisCalculator.RawSpan> queryLiveSpans(
+            String specificService,
+            ObservabilityQueryValidator.TimeRange range,
+            int perServiceLimit,
+            int maxTotalSpans
+    ) {
+        List<String> targetServices = specificService != null
+                ? List.of(specificService)
+                : backendClient.queryJaegerV3Services();
+        if (targetServices.isEmpty()) {
+            return List.of();
+        }
+        Map<String, TraceAnalysisCalculator.RawSpan> deduplicated = new LinkedHashMap<>();
+        for (String svc : targetServices) {
+            if (deduplicated.size() >= maxTotalSpans) {
+                break;
+            }
+            Optional<JsonNode> liveJson = backendClient.queryJaegerV3Traces(
+                    svc,
+                    range.from(),
+                    range.to(),
+                    perServiceLimit
+            );
+            if (liveJson.isEmpty()) {
+                continue;
+            }
+            List<TraceAnalysisCalculator.RawSpan> parsed = analysisCalculator.parseJaegerV3OtlpSpans(
+                    liveJson.get(),
+                    maxTotalSpans
+            );
+            for (TraceAnalysisCalculator.RawSpan span : parsed) {
+                deduplicated.putIfAbsent(span.traceId() + ":" + span.spanId(), span);
+                if (deduplicated.size() >= maxTotalSpans) {
+                    break;
+                }
+            }
+        }
+        return List.copyOf(deduplicated.values());
     }
 
     private List<TraceResponses.TraceSummaryDto> collectLocalTraceSummaries(
@@ -167,117 +233,138 @@ public class TracesQueryService {
             ObservabilityQueryValidator.TimeRange range,
             int limit
     ) {
-        Map<String, TraceResponses.TraceSummaryDto> byTraceId = new LinkedHashMap<>();
-        List<IncidentEntity> incidents = incidentRepository.findAll().stream()
-                .filter(i -> environmentId.equals(i.getEnvironmentId()))
-                .filter(i -> service == null || service.equals(i.getService()))
-                .filter(i -> i.getTraceId() != null && !i.getTraceId().isBlank())
-                .filter(i -> !i.getCreatedAt().isBefore(range.from()) && !i.getCreatedAt().isAfter(range.to()))
-                .sorted(Comparator.comparing(IncidentEntity::getCreatedAt).reversed())
-                .toList();
+        return readOnlyTx.execute(status -> {
+            List<IncidentEntity> scoped = service != null
+                    ? incidentRepository.findByEnvironmentIdAndServiceAndCreatedAtBetweenOrderByCreatedAtDesc(
+                            environmentId, service, range.from(), range.to())
+                    : incidentRepository.findByEnvironmentIdAndCreatedAtBetweenOrderByCreatedAtDesc(
+                            environmentId, range.from(), range.to());
 
-        for (IncidentEntity incident : incidents) {
-            String tid = incident.getTraceId();
-            if (byTraceId.containsKey(tid)) {
-                continue;
+            List<IncidentEntity> incidents = scoped.stream()
+                    .filter(i -> i.getTraceId() != null && !i.getTraceId().isBlank())
+                    .toList();
+            if (incidents.isEmpty()) {
+                return List.of();
             }
-            List<TraceAnalysisCalculator.RawSpan> spans = extractSpansFromIncident(incident);
-            if (!spans.isEmpty()) {
-                List<TraceResponses.TraceSummaryDto> summaries = analysisCalculator.summarizeByTrace(spans);
-                if (!summaries.isEmpty()) {
-                    TraceResponses.TraceSummaryDto s = summaries.getFirst();
+
+            Map<UUID, List<TraceAnalysisCalculator.RawSpan>> spansByIncident = extractSpansByIncident(incidents);
+            Map<String, TraceResponses.TraceSummaryDto> byTraceId = new LinkedHashMap<>();
+
+            for (IncidentEntity incident : incidents) {
+                String tid = incident.getTraceId();
+                if (byTraceId.containsKey(tid)) {
+                    continue;
+                }
+                List<TraceAnalysisCalculator.RawSpan> spans = spansByIncident.getOrDefault(incident.getId(), List.of());
+                if (!spans.isEmpty()) {
+                    List<TraceResponses.TraceSummaryDto> summaries = analysisCalculator.summarizeByTrace(spans);
+                    if (!summaries.isEmpty()) {
+                        TraceResponses.TraceSummaryDto s = summaries.getFirst();
+                        byTraceId.put(tid, new TraceResponses.TraceSummaryDto(
+                                s.traceId(),
+                                s.rootService(),
+                                s.rootOperation(),
+                                s.startedAt(),
+                                s.durationMs(),
+                                s.spanCount(),
+                                s.errorSpanCount(),
+                                s.services(),
+                                incident.getId()
+                        ));
+                    }
+                } else {
                     byTraceId.put(tid, new TraceResponses.TraceSummaryDto(
-                            s.traceId(),
-                            s.rootService(),
-                            s.rootOperation(),
-                            s.startedAt(),
-                            s.durationMs(),
-                            s.spanCount(),
-                            s.errorSpanCount(),
-                            s.services(),
+                            tid,
+                            incident.getService(),
+                            "incident.alert",
+                            incident.getStartedAt() != null ? incident.getStartedAt() : incident.getCreatedAt(),
+                            0.0,
+                            1,
+                            1,
+                            List.of(incident.getService()),
                             incident.getId()
                     ));
                 }
-            } else {
-                byTraceId.put(tid, new TraceResponses.TraceSummaryDto(
-                        tid,
-                        incident.getService(),
-                        "incident.alert",
-                        incident.getStartedAt() != null ? incident.getStartedAt() : incident.getCreatedAt(),
-                        0.0,
-                        1,
-                        1,
-                        List.of(incident.getService()),
-                        incident.getId()
-                ));
+                if (byTraceId.size() >= limit) {
+                    break;
+                }
             }
-            if (byTraceId.size() >= limit) {
-                break;
-            }
-        }
-        return List.copyOf(byTraceId.values());
+            return List.copyOf(byTraceId.values());
+        });
     }
 
     private List<TraceAnalysisCalculator.RawSpan> collectLocalSpansForTrace(String environmentId, String traceId) {
-        List<IncidentEntity> matchingIncidents = incidentRepository.findAll().stream()
-                .filter(i -> environmentId.equals(i.getEnvironmentId()))
-                .filter(i -> traceId.equals(i.getTraceId()))
-                .toList();
-
-        List<TraceAnalysisCalculator.RawSpan> spans = new ArrayList<>();
-        for (IncidentEntity incident : matchingIncidents) {
-            List<TraceAnalysisCalculator.RawSpan> extracted = extractSpansFromIncident(incident);
-            if (!extracted.isEmpty()) {
-                spans.addAll(extracted);
-            } else {
-                spans.add(new TraceAnalysisCalculator.RawSpan(
-                        traceId,
-                        incident.getId().toString().substring(0, 16),
-                        null,
-                        incident.getService(),
-                        "incident.alert",
-                        incident.getStartedAt() != null ? incident.getStartedAt() : incident.getCreatedAt(),
-                        0.0,
-                        "ERROR",
-                        Map.of("incidentId", incident.getId().toString(), "severity", incident.getSeverity().name())
-                ));
+        return readOnlyTx.execute(status -> {
+            List<IncidentEntity> matchingIncidents = incidentRepository.findByEnvironmentIdAndTraceId(environmentId, traceId);
+            if (matchingIncidents.isEmpty()) {
+                return List.of();
             }
-        }
-        return spans;
+
+            Map<UUID, List<TraceAnalysisCalculator.RawSpan>> spansByIncident = extractSpansByIncident(matchingIncidents);
+            List<TraceAnalysisCalculator.RawSpan> spans = new ArrayList<>();
+            for (IncidentEntity incident : matchingIncidents) {
+                List<TraceAnalysisCalculator.RawSpan> extracted = spansByIncident.getOrDefault(incident.getId(), List.of());
+                if (!extracted.isEmpty()) {
+                    spans.addAll(extracted);
+                } else {
+                    spans.add(new TraceAnalysisCalculator.RawSpan(
+                            traceId,
+                            incident.getId().toString().substring(0, 16),
+                            null,
+                            incident.getService(),
+                            "incident.alert",
+                            incident.getStartedAt() != null ? incident.getStartedAt() : incident.getCreatedAt(),
+                            0.0,
+                            "ERROR",
+                            Map.of("incidentId", incident.getId().toString(), "severity", incident.getSeverity().name())
+                    ));
+                }
+            }
+            return spans;
+        });
     }
 
     private List<TraceAnalysisCalculator.RawSpan> collectLocalSpansInRange(
             String environmentId,
             ObservabilityQueryValidator.TimeRange range
     ) {
-        List<IncidentEntity> incidents = incidentRepository.findAll().stream()
-                .filter(i -> environmentId.equals(i.getEnvironmentId()))
-                .filter(i -> !i.getCreatedAt().isBefore(range.from()) && !i.getCreatedAt().isAfter(range.to()))
-                .toList();
+        return readOnlyTx.execute(status -> {
+            List<IncidentEntity> incidents = incidentRepository
+                    .findByEnvironmentIdAndCreatedAtBetweenOrderByCreatedAtDesc(environmentId, range.from(), range.to());
+            if (incidents.isEmpty()) {
+                return List.of();
+            }
 
-        List<TraceAnalysisCalculator.RawSpan> spans = new ArrayList<>();
-        for (IncidentEntity incident : incidents) {
-            spans.addAll(extractSpansFromIncident(incident));
-        }
-        return spans;
+            Map<UUID, List<TraceAnalysisCalculator.RawSpan>> spansByIncident = extractSpansByIncident(incidents);
+            List<TraceAnalysisCalculator.RawSpan> spans = new ArrayList<>();
+            for (IncidentEntity incident : incidents) {
+                spans.addAll(spansByIncident.getOrDefault(incident.getId(), List.of()));
+            }
+            return spans;
+        });
     }
 
-    private List<TraceAnalysisCalculator.RawSpan> extractSpansFromIncident(IncidentEntity incident) {
+    private Map<UUID, List<TraceAnalysisCalculator.RawSpan>> extractSpansByIncident(List<IncidentEntity> incidents) {
+        List<UUID> incidentIds = incidents.stream().map(IncidentEntity::getId).toList();
+        if (incidentIds.isEmpty()) {
+            return Map.of();
+        }
         List<EvidenceItemEntity> traceItems = evidenceItemRepository
-                .findByIncidentIdOrderByObservedAtDesc(incident.getId())
-                .stream()
-                .filter(item -> item.getType() == EvidenceType.TRACE)
-                .toList();
-
-        List<TraceAnalysisCalculator.RawSpan> spans = new ArrayList<>();
+                .findByIncidentIdInAndTypeOrderByObservedAtDesc(incidentIds, EvidenceType.TRACE);
+        Map<UUID, List<TraceAnalysisCalculator.RawSpan>> byIncident = new LinkedHashMap<>();
         for (EvidenceItemEntity item : traceItems) {
             try {
                 JsonNode parsed = objectMapper.readTree(item.getExcerpt());
-                spans.addAll(analysisCalculator.parseJaegerV3OtlpSpans(parsed, properties.getMaxSpansPerTrace()));
+                List<TraceAnalysisCalculator.RawSpan> parsedSpans =
+                        analysisCalculator.parseJaegerV3OtlpSpans(parsed, properties.getMaxSpansPerTrace());
+                if (!parsedSpans.isEmpty()) {
+                    byIncident.computeIfAbsent(item.getIncidentId(), ignored -> new ArrayList<>())
+                            .addAll(parsedSpans);
+                }
             } catch (Exception ignored) {
                 // Non-OTLP trace excerpt; synthesize single trace span below if needed
             }
         }
-        return spans;
+        return byIncident;
     }
 }
