@@ -12,13 +12,10 @@ import java.util.Map;
 @Service
 public class McpClient {
 
-    private WebClient webClient;
+    private final WebClient webClient;
 
-    @Value("${mcp.server1.url}")
-    private String mcpUrl1;
-
-    public McpClient(@Value("${mcp.server1.url}") String mcpUrl1) {
-        this.webClient = WebClient.create(mcpUrl1); // MCP server URL
+    public McpClient(WebClient.Builder builder, @Value("${mcp.server1.url}") String mcpUrl1) {
+        this.webClient = builder.clone().baseUrl(mcpUrl1).build();
     }
 
     public Mono<String> listContainers() {

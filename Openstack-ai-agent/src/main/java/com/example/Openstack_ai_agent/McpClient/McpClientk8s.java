@@ -12,8 +12,8 @@ public class McpClientk8s {
 
         private final WebClient webClient;
 
-        public McpClientk8s(@Value("${mcp.server3.url}") String baseUrl) {
-                this.webClient = WebClient.builder()
+        public McpClientk8s(WebClient.Builder builder, @Value("${mcp.server3.url}") String baseUrl) {
+                this.webClient = builder.clone()
                                 .baseUrl(baseUrl)
                                 .build();
         }
@@ -52,7 +52,7 @@ public class McpClientk8s {
 
         public Mono<String> scaleDeployment(String namespace, String name, int replicas) {
                 return webClient.post()
-                                .uri("/api/v1/k8s/deployments/{namespace}/{name}/scale", namespace, name)
+                                .uri("/k8s/deployments/{namespace}/{name}/scale", namespace, name)
                                 .bodyValue("{\"replicas\":" + replicas + "}")
                                 .retrieve()
                                 .bodyToMono(String.class);
@@ -60,7 +60,7 @@ public class McpClientk8s {
 
         public Mono<String> applyYaml(String namespace, String yamlText) {
                 return webClient.post()
-                                .uri("/api/v1/k8s/apply")
+                                .uri("/k8s/apply")
                                 .bodyValue("{\"namespace\":\"" + namespace + "\", \"yaml_text\": \"" +
                                                 yamlText.replace("\"", "\\\"") + "\"}")
                                 .retrieve()

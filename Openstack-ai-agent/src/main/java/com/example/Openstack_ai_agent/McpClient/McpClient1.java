@@ -12,15 +12,11 @@ import java.util.Map;
 @Service
 public class McpClient1 {
 
-    private WebClient webClient;
+    private final WebClient webClient;
 
-    @Value("${mcp.server2.url}")
-    private String mcpUrl2;
-
-    public McpClient1(
+    public McpClient1(WebClient.Builder builder,
             @Value("${mcp.server2.url}") String mcpUrl2) {
-
-        this.webClient = WebClient.create(mcpUrl2); // MCP server2 URL
+        this.webClient = builder.clone().baseUrl(mcpUrl2).build();
     }
 
     // -------------------- MCP SERVER 2 (Smart Monitoring) --------------------

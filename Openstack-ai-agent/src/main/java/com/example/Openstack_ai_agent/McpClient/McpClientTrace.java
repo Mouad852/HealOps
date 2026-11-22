@@ -12,8 +12,8 @@ public class McpClientTrace {
 
         private final WebClient webClient;
 
-        public McpClientTrace(@Value("${mcp.trace.url}") String baseUrl) {
-                this.webClient = WebClient.builder()
+        public McpClientTrace(WebClient.Builder builder, @Value("${mcp.trace.url}") String baseUrl) {
+                this.webClient = builder.clone()
                                 .baseUrl(baseUrl)
                                 .build();
         }

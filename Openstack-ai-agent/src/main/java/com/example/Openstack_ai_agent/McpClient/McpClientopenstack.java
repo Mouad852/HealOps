@@ -10,8 +10,8 @@ public class McpClientopenstack {
 
     private final WebClient webClient;
 
-    public McpClientopenstack(@Value("${mcp.server4.url}") String baseUrl) {
-        this.webClient = WebClient.builder()
+    public McpClientopenstack(WebClient.Builder builder, @Value("${mcp.server4.url}") String baseUrl) {
+        this.webClient = builder.clone()
                 .baseUrl(baseUrl)
                 .build();
     }
