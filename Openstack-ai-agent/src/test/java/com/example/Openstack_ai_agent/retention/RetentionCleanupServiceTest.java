@@ -46,6 +46,9 @@ class RetentionCleanupServiceTest {
     private RetentionCleanupService retentionCleanupService;
 
     @Autowired
+    private RetentionProperties retentionProperties;
+
+    @Autowired
     private IncidentService incidentService;
 
     @Autowired
@@ -214,6 +217,38 @@ class RetentionCleanupServiceTest {
         assertThat(auditRecordRepository.existsById(auditRecord.getId())).isTrue();
         assertThat(incidentRepository.existsById(incidentId)).isTrue();
         assertThat(incidentEventRepository.countByIncidentId(incidentId)).isGreaterThanOrEqualTo(1L);
+    }
+
+    @Test
+    void runScheduledCleanupCommitsExpiredConversationsAndMessagesWithoutSelfInvocationProxyBypass() {
+        OffsetDateTime now = OffsetDateTime.now();
+        ConversationSessionEntity expiredSession = conversationSessionRepository.saveAndFlush(
+                ConversationSessionEntity.create("local", "Scheduled expired session")
+        );
+        ConversationMessageEntity msg1 = conversationMessageRepository.saveAndFlush(
+                ConversationMessageEntity.create(expiredSession.getId(), ConversationMessageRole.USER, "scheduled old q", null, null, null)
+        );
+        ConversationMessageEntity msg2 = conversationMessageRepository.saveAndFlush(
+                ConversationMessageEntity.create(expiredSession.getId(), ConversationMessageRole.ASSISTANT, "scheduled old a", null, null, null)
+        );
+        jdbcTemplate.update(
+                "update conversation_sessions set created_at = ?, updated_at = ? where id = ?",
+                Timestamp.from(now.minusDays(45).toInstant()),
+                Timestamp.from(now.minusDays(45).toInstant()),
+                expiredSession.getId()
+        );
+
+        boolean previousEnabled = retentionProperties.isEnabled();
+        try {
+            retentionProperties.setEnabled(true);
+            retentionCleanupService.runScheduledCleanup();
+        } finally {
+            retentionProperties.setEnabled(previousEnabled);
+        }
+
+        assertThat(conversationMessageRepository.existsById(msg1.getId())).isFalse();
+        assertThat(conversationMessageRepository.existsById(msg2.getId())).isFalse();
+        assertThat(conversationSessionRepository.existsById(expiredSession.getId())).isFalse();
     }
 
     private UUID insertEvidence(UUID incidentId, EvidenceType type, OffsetDateTime observedAt) {

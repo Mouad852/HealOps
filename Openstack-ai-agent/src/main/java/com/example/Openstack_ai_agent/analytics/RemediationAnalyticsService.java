@@ -72,22 +72,40 @@ public class RemediationAnalyticsService {
             return calculator.calculate(normalizedFilter, List.copyOf(authorizedEnvs), List.of(), List.of());
         }
 
-        Map<UUID, IncidentEntity> scopedIncidents = incidentRepository.findAll().stream()
-                .filter(incident -> scopedEnvs.contains(incident.getEnvironmentId()))
+        Map<UUID, IncidentEntity> scopedIncidents = incidentRepository.findByEnvironmentIdIn(scopedEnvs).stream()
                 .collect(Collectors.toMap(IncidentEntity::getId, incident -> incident));
 
         if (scopedIncidents.isEmpty()) {
             return calculator.calculate(normalizedFilter, List.copyOf(authorizedEnvs), List.of(), List.of());
         }
 
-        List<RemediationOutcomeEntity> scopedOutcomes = outcomeRepository.findAll().stream()
-                .filter(outcome -> scopedIncidents.containsKey(outcome.getIncidentId()))
-                .toList();
+        Set<UUID> scopedIncidentIds = scopedIncidents.keySet();
+        List<RemediationOutcomeEntity> scopedOutcomes = outcomeRepository.findByIncidentIdIn(scopedIncidentIds);
+
+        Map<UUID, List<IncidentEventEntity>> eventsByIncidentId = new LinkedHashMap<>();
+        if (!scopedOutcomes.isEmpty()) {
+            Set<UUID> outcomeIncidentIds = scopedOutcomes.stream()
+                    .filter(RemediationOutcomeEntity::isSuccess)
+                    .map(RemediationOutcomeEntity::getIncidentId)
+                    .collect(Collectors.toSet());
+            if (!outcomeIncidentIds.isEmpty()) {
+                for (IncidentEventEntity event : incidentEventRepository.findByIncidentIdInOrderByEventSequenceAsc(outcomeIncidentIds)) {
+                    eventsByIncidentId.computeIfAbsent(event.getIncidentId(), ignored -> new ArrayList<>()).add(event);
+                }
+            }
+        }
 
         List<RemediationAnalyticsCalculator.OutcomeSample> outcomeSamples = new ArrayList<>();
         for (RemediationOutcomeEntity outcome : scopedOutcomes) {
             IncidentEntity incident = scopedIncidents.get(outcome.getIncidentId());
-            Long recoveryTimeMs = resolveRecoveryTimeMs(incident, outcome);
+            if (incident == null) {
+                continue;
+            }
+            Long recoveryTimeMs = resolveRecoveryTimeMs(
+                    incident,
+                    outcome,
+                    eventsByIncidentId.getOrDefault(incident.getId(), List.of())
+            );
             outcomeSamples.add(new RemediationAnalyticsCalculator.OutcomeSample(
                     outcome.getActionType(),
                     incident.getService(),
@@ -101,15 +119,13 @@ public class RemediationAnalyticsService {
         }
 
         Map<UUID, ProposedActionEntity> scopedActions = new LinkedHashMap<>();
-        for (ProposedActionEntity action : proposedActionRepository.findAll()) {
-            if (scopedIncidents.containsKey(action.getIncidentId())) {
-                scopedActions.put(action.getId(), action);
-            }
+        for (ProposedActionEntity action : proposedActionRepository.findByIncidentIdIn(scopedIncidentIds)) {
+            scopedActions.put(action.getId(), action);
         }
 
         List<RemediationAnalyticsCalculator.ApprovalDelaySample> approvalDelays = new ArrayList<>();
         if (!scopedActions.isEmpty()) {
-            for (ApprovalDecisionEntity decision : approvalDecisionRepository.findAll()) {
+            for (ApprovalDecisionEntity decision : approvalDecisionRepository.findByActionIdIn(scopedActions.keySet())) {
                 ProposedActionEntity action = scopedActions.get(decision.getActionId());
                 if (action != null && action.getCreatedAt() != null && decision.getDecidedAt() != null) {
                     long delayMs = Math.max(0L, Duration.between(action.getCreatedAt(), decision.getDecidedAt()).toMillis());
@@ -126,12 +142,14 @@ public class RemediationAnalyticsService {
         );
     }
 
-    private Long resolveRecoveryTimeMs(IncidentEntity incident, RemediationOutcomeEntity outcome) {
+    private Long resolveRecoveryTimeMs(
+            IncidentEntity incident,
+            RemediationOutcomeEntity outcome,
+            List<IncidentEventEntity> timeline
+    ) {
         if (!outcome.isSuccess()) {
             return null;
         }
-        List<IncidentEventEntity> timeline = incidentEventRepository
-                .findByIncidentIdOrderByEventSequenceAsc(incident.getId());
         OffsetDateTime closedAt = timeline.stream()
                 .filter(event -> event.getToStatus() == IncidentStatus.CLOSED)
                 .map(IncidentEventEntity::getOccurredAt)

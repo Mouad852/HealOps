@@ -68,27 +68,36 @@ public class ApprovalService {
             return List.of();
         }
 
+        Set<String> targetEnvironments = (environmentId != null && !environmentId.isBlank())
+                ? Set.of(environmentId.trim())
+                : authorizedEnvironments;
+
+        Map<UUID, IncidentResponse> incidentsById = incidentService.findMapByEnvironmentIn(targetEnvironments);
+        if (incidentsById.isEmpty()) {
+            return List.of();
+        }
+
         ProposedActionStatus statusFilter = parseStatusFilter(rawStatus);
         List<ProposedActionEntity> candidates = statusFilter != null
-                ? proposedActionRepository.findByStatusOrderByCreatedAtDesc(statusFilter)
-                : proposedActionRepository.findAll().stream()
-                        .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
-                        .toList();
+                ? proposedActionRepository.findByIncidentIdInAndStatusOrderByCreatedAtDesc(incidentsById.keySet(), statusFilter)
+                : proposedActionRepository.findByIncidentIdInOrderByCreatedAtDesc(incidentsById.keySet());
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
 
-        List<ApprovalQueueItemResponse> results = new ArrayList<>();
+        List<UUID> actionIds = candidates.stream().map(ProposedActionEntity::getId).toList();
+        Map<UUID, ApprovalDecisionEntity> latestDecisionByActionId = new LinkedHashMap<>();
+        for (ApprovalDecisionEntity decision : approvalDecisionRepository.findByActionIdInOrderByDecidedAtDesc(actionIds)) {
+            latestDecisionByActionId.putIfAbsent(decision.getActionId(), decision);
+        }
+
+        List<ApprovalQueueItemResponse> results = new ArrayList<>(candidates.size());
         for (ProposedActionEntity action : candidates) {
-            IncidentResponse incident = incidentService.findById(action.getIncidentId());
-            if (!authorizedEnvironments.contains(incident.environmentId())) {
+            IncidentResponse incident = incidentsById.get(action.getIncidentId());
+            if (incident == null) {
                 continue;
             }
-            if (environmentId != null && !environmentId.isBlank() && !environmentId.trim().equals(incident.environmentId())) {
-                continue;
-            }
-            ApprovalDecisionEntity latest = approvalDecisionRepository
-                    .findByActionIdOrderByDecidedAtDesc(action.getId())
-                    .stream()
-                    .findFirst()
-                    .orElse(null);
+            ApprovalDecisionEntity latest = latestDecisionByActionId.get(action.getId());
             results.add(ApprovalQueueItemResponse.from(
                     action,
                     incident,

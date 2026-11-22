@@ -316,4 +316,17 @@ class ControlPlaneWebMvcTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.title").value("Access denied"));
     }
+
+    @Test
+    void legacyAskAgentEndpointsAreNoLongerExposed() throws Exception {
+        mockMvc.perform(get("/AskAgent")
+                        .param("query", "list containers")
+                        .with(user("viewer").authorities(() -> "ROLE_VIEWER", () -> "incident:read", () -> "env:local")))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(get("/api/AskAgent")
+                        .param("query", "list containers")
+                        .with(user("operator").authorities(() -> "ROLE_OPERATOR", () -> "incident:read", () -> "incident:write", () -> "env:local")))
+                .andExpect(status().isNotFound());
+    }
 }

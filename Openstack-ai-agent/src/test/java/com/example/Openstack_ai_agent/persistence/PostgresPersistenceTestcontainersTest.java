@@ -28,7 +28,9 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -68,7 +70,7 @@ class PostgresPersistenceTestcontainersTest {
     private EntityManager entityManager;
 
     @Test
-    void enforcesUniqueDeduplicationConstraintAndPersistsJsonbAuditRecords() {
+    void enforcesUniqueDeduplicationConstraintOnIncidents() {
         CreateIncidentRequest req = new CreateIncidentRequest(
                 "alertmanager",
                 "pg-ext-1",
@@ -78,7 +80,7 @@ class PostgresPersistenceTestcontainersTest {
                 "checkout-api",
                 OffsetDateTime.now().minusSeconds(5),
                 Map.of("namespace", "payments"),
-                Map.of("summary", "PostgreSQL migration & JSONB test"),
+                Map.of("summary", "PostgreSQL unique deduplication test"),
                 "4bf92f3577b34da6a3ce929d0e0e4736"
         );
 
@@ -88,9 +90,24 @@ class PostgresPersistenceTestcontainersTest {
 
         assertThatThrownBy(() -> incidentRepository.saveAndFlush(IncidentEntity.alertReceived(req)))
                 .isInstanceOf(DataIntegrityViolationException.class);
+    }
 
-        entityManager.clear();
+    @Test
+    void persistsJsonbAuditRecordsAgainstFlywaySchema() {
+        CreateIncidentRequest req = new CreateIncidentRequest(
+                "alertmanager",
+                "pg-ext-audit",
+                "pg-audit-fp-1",
+                "local",
+                IncidentSeverity.MEDIUM,
+                "checkout-api",
+                OffsetDateTime.now().minusSeconds(5),
+                Map.of("namespace", "payments"),
+                Map.of("summary", "PostgreSQL JSONB audit test"),
+                "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
 
+        IncidentEntity saved = incidentRepository.saveAndFlush(IncidentEntity.alertReceived(req));
         AuditRecordEntity audit = auditRecordRepository.saveAndFlush(AuditRecordEntity.create(
                 "operator",
                 "POLICY_CHECK",
@@ -99,7 +116,12 @@ class PostgresPersistenceTestcontainersTest {
                 Map.of("policyVersion", "policy-v1.0.0", "environmentId", "local"),
                 "4bf92f3577b34da6a3ce929d0e0e4736"
         ));
-        assertThat(auditRecordRepository.findById(audit.getId())).isPresent();
+        entityManager.clear();
+
+        AuditRecordEntity reloaded = auditRecordRepository.findById(audit.getId()).orElseThrow();
+        assertThat(reloaded.getDetails())
+                .containsEntry("policyVersion", "policy-v1.0.0")
+                .containsEntry("environmentId", "local");
     }
 
     @Test
@@ -141,5 +163,38 @@ class PostgresPersistenceTestcontainersTest {
         assertThatThrownBy(() -> {
             proposedActionRepository.saveAndFlush(action);
         }).isInstanceOf(ObjectOptimisticLockingFailureException.class);
+    }
+
+    @Test
+    void executesKeysetPaginationQueryAgainstPostgresIndex() {
+        for (int i = 0; i < 4; i++) {
+            incidentRepository.saveAndFlush(IncidentEntity.alertReceived(new CreateIncidentRequest(
+                    "alertmanager",
+                    "pg-keyset-ext-" + i,
+                    "pg-keyset-fp-" + i,
+                    "local",
+                    IncidentSeverity.HIGH,
+                    "checkout-api",
+                    OffsetDateTime.now().minusMinutes(5 - i),
+                    Map.of(),
+                    Map.of(),
+                    null
+            )));
+        }
+
+        List<IncidentEntity> firstPage = incidentRepository.findKeysetPage(
+                Set.of("local"), null, null, null, null, 3);
+        assertThat(firstPage).hasSize(3);
+
+        IncidentEntity lastOfFirst = firstPage.get(1);
+        List<IncidentEntity> secondPage = incidentRepository.findKeysetPage(
+                Set.of("local"),
+                null,
+                null,
+                lastOfFirst.getCreatedAt(),
+                lastOfFirst.getId(),
+                3);
+        assertThat(secondPage).isNotEmpty();
+        assertThat(secondPage.getFirst().getId()).isEqualTo(firstPage.get(2).getId());
     }
 }

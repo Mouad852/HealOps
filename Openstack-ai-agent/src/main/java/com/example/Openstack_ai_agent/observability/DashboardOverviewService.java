@@ -56,9 +56,7 @@ public class DashboardOverviewService {
 
         List<IncidentEntity> scopedIncidents = scopedEnvs.isEmpty()
                 ? List.of()
-                : incidentRepository.findAll().stream()
-                        .filter(incident -> scopedEnvs.contains(incident.getEnvironmentId()))
-                        .toList();
+                : incidentRepository.findByEnvironmentIdIn(scopedEnvs);
 
         Map<String, Long> byStatus = new LinkedHashMap<>();
         Map<String, Long> bySeverity = new LinkedHashMap<>();
@@ -77,9 +75,7 @@ public class DashboardOverviewService {
 
         long pendingApprovalCount = scopedIncidentIds.isEmpty()
                 ? 0L
-                : proposedActionRepository.findByStatusOrderByCreatedAtDesc(ProposedActionStatus.PROPOSED).stream()
-                        .filter(action -> scopedIncidentIds.contains(action.getIncidentId()))
-                        .count();
+                : proposedActionRepository.countByIncidentIdInAndStatus(scopedIncidentIds, ProposedActionStatus.PROPOSED);
 
         List<DashboardOverviewResponse.ServiceHealthCard> serviceHealth = buildServiceHealthCards(scopedIncidents);
         RemediationAnalyticsResponse analytics = remediationAnalyticsService
@@ -109,7 +105,7 @@ public class DashboardOverviewService {
                 .collect(Collectors.toMap(IncidentEntity::getId, i -> i));
 
         Map<String, HealthSnapshotEntity> latestSnapshotByEnvService = new LinkedHashMap<>();
-        for (HealthSnapshotEntity snapshot : healthSnapshotRepository.findAll()) {
+        for (HealthSnapshotEntity snapshot : healthSnapshotRepository.findByIncidentIdIn(byId.keySet())) {
             IncidentEntity incident = byId.get(snapshot.getIncidentId());
             if (incident == null) {
                 continue;

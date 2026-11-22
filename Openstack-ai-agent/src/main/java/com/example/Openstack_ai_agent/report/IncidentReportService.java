@@ -18,9 +18,10 @@ import com.example.Openstack_ai_agent.remediation.ToolExecutionRepository;
 import com.example.Openstack_ai_agent.remediation.ToolExecutionResponse;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -36,6 +37,8 @@ public class IncidentReportService {
     private final ToolExecutionRepository toolExecutionRepository;
     private final RemediationOutcomeRepository remediationOutcomeRepository;
     private final IncidentReportRenderer renderer;
+    private final TransactionTemplate readOnlyTx;
+    private final TransactionTemplate requiresNewTx;
 
     public IncidentReportService(
             IncidentReportRepository incidentReportRepository,
@@ -46,7 +49,8 @@ public class IncidentReportService {
             ApprovalDecisionRepository approvalDecisionRepository,
             ToolExecutionRepository toolExecutionRepository,
             RemediationOutcomeRepository remediationOutcomeRepository,
-            IncidentReportRenderer renderer
+            IncidentReportRenderer renderer,
+            PlatformTransactionManager transactionManager
     ) {
         this.incidentReportRepository = incidentReportRepository;
         this.incidentService = incidentService;
@@ -57,69 +61,101 @@ public class IncidentReportService {
         this.toolExecutionRepository = toolExecutionRepository;
         this.remediationOutcomeRepository = remediationOutcomeRepository;
         this.renderer = renderer;
+        this.readOnlyTx = new TransactionTemplate(transactionManager);
+        this.readOnlyTx.setReadOnly(true);
+        this.requiresNewTx = new TransactionTemplate(transactionManager);
+        this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    @Transactional
     public IncidentReportResponse generateOrGetReport(UUID incidentId) {
-        IncidentResponse incident = incidentService.findById(incidentId);
-        if (!incident.status().isTerminal()) {
-            throw new IncidentReportConflictException(incidentId, incident.status());
+        ReportSnapshot snapshot = readOnlyTx.execute(status -> {
+            IncidentResponse incident = incidentService.findById(incidentId);
+            if (!incident.status().isTerminal()) {
+                throw new IncidentReportConflictException(incidentId, incident.status());
+            }
+
+            Optional<IncidentReportEntity> existingOpt = incidentReportRepository.findByIncidentId(incidentId);
+            if (existingOpt.isPresent() && existingOpt.get().getFinalOutcome().equals(incident.status().name())) {
+                return new ReportSnapshot(IncidentReportResponse.from(existingOpt.get()), null, null);
+            }
+
+            List<IncidentEventResponse> timeline = incidentService.findTimeline(incidentId);
+            List<EvidenceItemResponse> evidence = evidenceCollectionService.findAll(incidentId);
+            List<DiagnosisResponse> diagnoses = diagnosisPersistenceService.findDiagnoses(incidentId);
+            List<ProposedActionResponse> proposedActions = diagnosisPersistenceService.findProposedActions(incidentId);
+            List<UUID> actionIds = proposedActions.stream().map(ProposedActionResponse::id).toList();
+            List<ApprovalDecisionEntity> approvals = actionIds.isEmpty()
+                    ? List.of()
+                    : approvalDecisionRepository.findByActionIdInOrderByDecidedAtDesc(actionIds);
+            List<ToolExecutionResponse> executions = toolExecutionRepository
+                    .findByIncidentIdOrderByStartedAtAsc(incidentId)
+                    .stream()
+                    .map(ToolExecutionResponse::from)
+                    .toList();
+            HealthComparisonResponse healthComparison = healthSnapshotService.getHealthComparisons(incidentId);
+            List<RemediationOutcomeEntity> outcomes = remediationOutcomeRepository
+                    .findByIncidentIdOrderByCreatedAtDesc(incidentId);
+
+            return new ReportSnapshot(
+                    null,
+                    existingOpt.map(IncidentReportEntity::getId).orElse(null),
+                    new IncidentReportRenderer.IncidentReportInput(
+                            incident,
+                            timeline,
+                            evidence,
+                            diagnoses,
+                            proposedActions,
+                            List.copyOf(approvals),
+                            executions,
+                            healthComparison,
+                            outcomes
+                    )
+            );
+        });
+
+        if (snapshot == null) {
+            throw new IllegalStateException("Report snapshot read transaction returned null");
+        }
+        if (snapshot.cachedResponse() != null) {
+            return snapshot.cachedResponse();
         }
 
-        Optional<IncidentReportEntity> existingOpt = incidentReportRepository.findByIncidentId(incidentId);
-        if (existingOpt.isPresent() && existingOpt.get().getFinalOutcome().equals(incident.status().name())) {
-            return IncidentReportResponse.from(existingOpt.get());
-        }
+        IncidentReportRenderer.RenderedIncidentReport rendered = renderer.render(snapshot.input());
 
-        List<IncidentEventResponse> timeline = incidentService.findTimeline(incidentId);
-        List<EvidenceItemResponse> evidence = evidenceCollectionService.findAll(incidentId);
-        List<DiagnosisResponse> diagnoses = diagnosisPersistenceService.findDiagnoses(incidentId);
-        List<ProposedActionResponse> proposedActions = diagnosisPersistenceService.findProposedActions(incidentId);
-        List<ApprovalDecisionEntity> approvals = new ArrayList<>();
-        for (ProposedActionResponse action : proposedActions) {
-            approvals.addAll(approvalDecisionRepository.findByActionIdOrderByDecidedAtDesc(action.id()));
-        }
-        List<ToolExecutionResponse> executions = toolExecutionRepository
-                .findByIncidentIdOrderByStartedAtAsc(incidentId)
-                .stream()
-                .map(ToolExecutionResponse::from)
-                .toList();
-        HealthComparisonResponse healthComparison = healthSnapshotService.getHealthComparisons(incidentId);
-        List<RemediationOutcomeEntity> outcomes = remediationOutcomeRepository
-                .findByIncidentIdOrderByCreatedAtDesc(incidentId);
-
-        IncidentReportRenderer.RenderedIncidentReport rendered = renderer.render(
-                new IncidentReportRenderer.IncidentReportInput(
-                        incident,
-                        timeline,
-                        evidence,
-                        diagnoses,
-                        proposedActions,
-                        List.copyOf(approvals),
-                        executions,
-                        healthComparison,
-                        outcomes
-                )
-        );
-
-        if (existingOpt.isPresent()) {
-            IncidentReportEntity existing = existingOpt.get();
-            existing.refresh(rendered.structuredReport(), rendered.renderedMarkdown(), rendered.finalOutcome());
-            return IncidentReportResponse.from(incidentReportRepository.saveAndFlush(existing));
+        if (snapshot.existingReportId() != null) {
+            return requiresNewTx.execute(status -> {
+                IncidentReportEntity existing = incidentReportRepository.findByIncidentId(incidentId)
+                        .orElseThrow(() -> new IllegalStateException("Existing report disappeared for incident " + incidentId));
+                existing.refresh(rendered.structuredReport(), rendered.renderedMarkdown(), rendered.finalOutcome());
+                return IncidentReportResponse.from(incidentReportRepository.saveAndFlush(existing));
+            });
         }
 
         try {
-            IncidentReportEntity created = IncidentReportEntity.create(
-                    incidentId,
-                    rendered.structuredReport(),
-                    rendered.renderedMarkdown(),
-                    rendered.finalOutcome()
-            );
-            return IncidentReportResponse.from(incidentReportRepository.saveAndFlush(created));
+            IncidentReportResponse createdResponse = requiresNewTx.execute(status -> {
+                IncidentReportEntity created = IncidentReportEntity.create(
+                        incidentId,
+                        rendered.structuredReport(),
+                        rendered.renderedMarkdown(),
+                        rendered.finalOutcome()
+                );
+                return IncidentReportResponse.from(incidentReportRepository.saveAndFlush(created));
+            });
+            if (createdResponse != null) {
+                return createdResponse;
+            }
         } catch (DataIntegrityViolationException race) {
-            return incidentReportRepository.findByIncidentId(incidentId)
+            return readOnlyTx.execute(status -> incidentReportRepository.findByIncidentId(incidentId)
                     .map(IncidentReportResponse::from)
-                    .orElseThrow(() -> race);
+                    .orElseThrow(() -> race));
         }
+        throw new IllegalStateException("Report persistence transaction returned null");
+    }
+
+    private record ReportSnapshot(
+            IncidentReportResponse cachedResponse,
+            UUID existingReportId,
+            IncidentReportRenderer.IncidentReportInput input
+    ) {
     }
 }

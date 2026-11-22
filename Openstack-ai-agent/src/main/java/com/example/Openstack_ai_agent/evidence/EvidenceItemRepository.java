@@ -10,6 +10,13 @@ import java.util.UUID;
 public interface EvidenceItemRepository extends JpaRepository<EvidenceItemEntity, UUID> {
     List<EvidenceItemEntity> findByIncidentIdOrderByObservedAtDesc(UUID incidentId);
 
+    List<EvidenceItemEntity> findByIncidentIdInOrderByObservedAtDesc(Collection<UUID> incidentIds);
+
+    List<EvidenceItemEntity> findByIncidentIdInAndTypeOrderByObservedAtDesc(
+            Collection<UUID> incidentIds,
+            EvidenceType type
+    );
+
     List<EvidenceItemEntity> findByTypeInAndObservedAtBeforeOrderByObservedAtAsc(
             Collection<EvidenceType> types,
             OffsetDateTime cutoff

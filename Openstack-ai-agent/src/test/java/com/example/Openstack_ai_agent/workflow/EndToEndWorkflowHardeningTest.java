@@ -33,6 +33,8 @@ import com.example.Openstack_ai_agent.remediation.ToolExecutionRepository;
 import com.example.Openstack_ai_agent.remediation.ToolExecutionStatus;
 import com.example.Openstack_ai_agent.report.IncidentReportEntity;
 import com.example.Openstack_ai_agent.report.IncidentReportRepository;
+import com.example.Openstack_ai_agent.report.IncidentReportResponse;
+import com.example.Openstack_ai_agent.report.IncidentReportService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,6 +58,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -128,6 +135,9 @@ class EndToEndWorkflowHardeningTest {
 
     @Autowired
     private IncidentReportRepository incidentReportRepository;
+
+    @Autowired
+    private IncidentReportService incidentReportService;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -472,6 +482,102 @@ class EndToEndWorkflowHardeningTest {
         assertThat(report.getFinalOutcome()).isEqualTo("ROLLED_BACK");
         assertThat(report.getRenderedMarkdown()).contains("POST_ROLLBACK");
         awaitNoIncompletePublications(Duration.ofSeconds(5));
+    }
+
+    @Test
+    void concurrentDuplicateAlertIntakeAndConcurrentReportGenerationRecoverCleanly() throws Exception {
+        JsonNode crashingPods = objectMapper.readTree(
+                "{\"pods\":[{\"name\":\"concurrent-api-1\",\"phase\":\"Failed\",\"reason\":\"CrashLoopBackOff\",\"restarts\":4}]}"
+        );
+        when(evidenceAdapterClient.kubernetesPods(eq("concurrent-ns"))).thenReturn(crashingPods);
+
+        String fingerprint = "concurrent-fp-" + UUID.randomUUID();
+        CreateIncidentRequest req = new CreateIncidentRequest(
+                "alertmanager",
+                "concurrent-ext-" + UUID.randomUUID(),
+                fingerprint,
+                "local",
+                IncidentSeverity.HIGH,
+                "concurrent-api",
+                OffsetDateTime.now().minusSeconds(5),
+                Map.of("namespace", "concurrent-ns", "deployment", "concurrent-api"),
+                Map.of("summary", "Concurrent duplicate alert"),
+                "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
+
+        int threads = 4;
+        try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
+            CountDownLatch startGate = new CountDownLatch(1);
+            List<Callable<IncidentService.IncidentCreationResult>> createTasks = new java.util.ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                createTasks.add(() -> {
+                    startGate.await();
+                    return incidentService.create(req);
+                });
+            }
+            List<Future<IncidentService.IncidentCreationResult>> createFutures = new java.util.ArrayList<>();
+            for (Callable<IncidentService.IncidentCreationResult> task : createTasks) {
+                createFutures.add(pool.submit(task));
+            }
+            startGate.countDown();
+
+            List<IncidentService.IncidentCreationResult> createResults = new java.util.ArrayList<>();
+            for (Future<IncidentService.IncidentCreationResult> future : createFutures) {
+                createResults.add(future.get());
+            }
+            assertThat(createResults).hasSize(threads);
+            UUID incidentId = createResults.getFirst().incident().id();
+            assertThat(createResults).allSatisfy(r -> assertThat(r.incident().id()).isEqualTo(incidentId));
+            assertThat(createResults.stream().filter(IncidentService.IncidentCreationResult::created).count())
+                    .isEqualTo(1L);
+
+            // Wait for workflow to reach AWAITING_APPROVAL, then reject to reach terminal CANCELLED
+            awaitStatus(incidentId, IncidentStatus.AWAITING_APPROVAL, Duration.ofSeconds(10));
+            ProposedActionResponse action = diagnosisPersistenceService.findProposedActions(incidentId).getFirst();
+
+            mockMvc.perform(post("/api/v1/approvals/{actionId}/decisions", action.id())
+                            .with(csrf())
+                            .with(user("operator").authorities(
+                                    () -> "ROLE_OPERATOR", () -> "incident:read", () -> "incident:approve", () -> "env:local"))
+                            .header("Idempotency-Key", "reject-concurrent-" + action.id())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {
+                                      "decision": "REJECTED",
+                                      "reason": "Testing concurrent report generation",
+                                      "expectedVersion": 0
+                                    }
+                                    """))
+                    .andExpect(status().isCreated());
+
+            awaitStatus(incidentId, IncidentStatus.CANCELLED, Duration.ofSeconds(10));
+            awaitReport(incidentId, Duration.ofSeconds(5));
+            awaitNoIncompletePublications(Duration.ofSeconds(5));
+
+            // Clear report and race concurrent generateOrGetReport calls
+            jdbcTemplate.update("delete from incident_reports where incident_id = ?", incidentId);
+
+            CountDownLatch reportGate = new CountDownLatch(1);
+            List<Future<IncidentReportResponse>> reportFutures = new java.util.ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                reportFutures.add(pool.submit(() -> {
+                    reportGate.await();
+                    return incidentReportService.generateOrGetReport(incidentId);
+                }));
+            }
+            reportGate.countDown();
+
+            List<IncidentReportResponse> reportResults = new java.util.ArrayList<>();
+            for (Future<IncidentReportResponse> future : reportFutures) {
+                reportResults.add(future.get());
+            }
+            assertThat(reportResults).hasSize(threads);
+            UUID reportId = reportResults.getFirst().id();
+            assertThat(reportResults).allSatisfy(r -> {
+                assertThat(r.id()).isEqualTo(reportId);
+                assertThat(r.finalOutcome()).isEqualTo("CANCELLED");
+            });
+        }
     }
 
     private IncidentResponse awaitStatus(UUID incidentId, IncidentStatus expected, Duration timeout) throws InterruptedException {

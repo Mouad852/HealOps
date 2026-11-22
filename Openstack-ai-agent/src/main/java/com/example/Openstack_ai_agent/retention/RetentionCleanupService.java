@@ -16,7 +16,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -54,6 +55,7 @@ public class RetentionCleanupService {
     private final DiagnosisRepository diagnosisRepository;
     private final ConversationSessionRepository conversationSessionRepository;
     private final ConversationMessageRepository conversationMessageRepository;
+    private final TransactionTemplate transactionTemplate;
     private final Counter dashboardEventsDeletedCounter;
     private final Counter telemetryDeletedCounter;
     private final Counter conversationsDeletedCounter;
@@ -65,6 +67,7 @@ public class RetentionCleanupService {
             DiagnosisRepository diagnosisRepository,
             ConversationSessionRepository conversationSessionRepository,
             ConversationMessageRepository conversationMessageRepository,
+            PlatformTransactionManager transactionManager,
             MeterRegistry meterRegistry
     ) {
         this.properties = properties;
@@ -73,6 +76,7 @@ public class RetentionCleanupService {
         this.diagnosisRepository = diagnosisRepository;
         this.conversationSessionRepository = conversationSessionRepository;
         this.conversationMessageRepository = conversationMessageRepository;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.dashboardEventsDeletedCounter = Counter.builder("healops.retention.deleted")
                 .tag("category", "dashboard_events")
                 .register(meterRegistry);
@@ -105,13 +109,19 @@ public class RetentionCleanupService {
         }
     }
 
-    @Transactional
     public RetentionCleanupResult runCleanupNow() {
         return runCleanupNow(OffsetDateTime.now());
     }
 
-    @Transactional
     public RetentionCleanupResult runCleanupNow(OffsetDateTime referenceNow) {
+        RetentionCleanupResult result = transactionTemplate.execute(status -> executeCleanup(referenceNow));
+        if (result == null) {
+            throw new IllegalStateException("Retention cleanup transaction returned null");
+        }
+        return result;
+    }
+
+    private RetentionCleanupResult executeCleanup(OffsetDateTime referenceNow) {
         OffsetDateTime now = referenceNow == null ? OffsetDateTime.now() : referenceNow;
         int batchSize = properties.getMaxBatchSize();
 

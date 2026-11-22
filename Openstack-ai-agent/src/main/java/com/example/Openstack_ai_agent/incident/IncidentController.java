@@ -8,6 +8,7 @@ import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,12 +20,25 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/incidents")
 public class IncidentController {
+    private static final Set<IncidentWorkflowEvent> RESTRICTED_MANUAL_EVENTS = EnumSet.of(
+            IncidentWorkflowEvent.ACTION_APPROVED,
+            IncidentWorkflowEvent.ACTION_REJECTED,
+            IncidentWorkflowEvent.EXECUTION_SUCCEEDED,
+            IncidentWorkflowEvent.EXECUTION_FAILED,
+            IncidentWorkflowEvent.VERIFICATION_PASSED,
+            IncidentWorkflowEvent.VERIFICATION_FAILED,
+            IncidentWorkflowEvent.ROLLBACK_SUCCEEDED,
+            IncidentWorkflowEvent.ROLLBACK_FAILED
+    );
+
     private final IncidentService incidentService;
     private final EvidenceCollectionService evidenceCollectionService;
 
@@ -96,6 +110,12 @@ public class IncidentController {
             @PathVariable UUID incidentId,
             @Valid @RequestBody TransitionIncidentRequest request,
             Authentication authentication) {
+        if (RESTRICTED_MANUAL_EVENTS.contains(request.event())
+                || request.failureDisposition() == FailureDisposition.ROLLING_BACK) {
+            throw new AccessDeniedException(
+                    "Manual transition event '" + request.event()
+                            + "' is restricted; use the dedicated approval or remediation workflow");
+        }
         String authenticatedActor = authentication != null && authentication.getName() != null
                 ? authentication.getName()
                 : request.actor();

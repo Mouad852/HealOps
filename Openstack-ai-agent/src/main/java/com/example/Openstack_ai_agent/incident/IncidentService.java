@@ -3,20 +3,30 @@ package com.example.Openstack_ai_agent.incident;
 import com.example.Openstack_ai_agent.common.api.CursorPageResponse;
 import com.example.Openstack_ai_agent.common.api.EnvironmentAuthorizationSupport;
 import com.example.Openstack_ai_agent.observability.DashboardEventPublisher;
+import jakarta.persistence.criteria.Predicate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
-import java.time.Instant;
-import java.util.Comparator;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class IncidentService {
@@ -24,6 +34,7 @@ public class IncidentService {
     private final IncidentEventRepository incidentEventRepository;
     private final DashboardEventPublisher dashboardEventPublisher;
     private final ApplicationEventPublisher eventPublisher;
+    private final TransactionTemplate requiresNewTx;
     private final boolean autoOrchestrate;
 
     public IncidentService(
@@ -31,21 +42,43 @@ public class IncidentService {
             IncidentEventRepository incidentEventRepository,
             DashboardEventPublisher dashboardEventPublisher,
             ApplicationEventPublisher eventPublisher,
+            PlatformTransactionManager transactionManager,
             @Value("${healops.workflow.auto-orchestrate:true}") boolean autoOrchestrate
     ) {
         this.incidentRepository = incidentRepository;
         this.incidentEventRepository = incidentEventRepository;
         this.dashboardEventPublisher = dashboardEventPublisher;
         this.eventPublisher = eventPublisher;
+        this.requiresNewTx = new TransactionTemplate(transactionManager);
+        this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.autoOrchestrate = autoOrchestrate;
     }
 
-    @Transactional
     public IncidentCreationResult create(CreateIncidentRequest request) {
-        return incidentRepository
-                .findBySourceAndEnvironmentIdAndFingerprint(request.source(), request.environmentId(), request.fingerprint())
-                .map(incident -> new IncidentCreationResult(toResponse(incident), false))
-                .orElseGet(() -> createNewIncident(request));
+        Optional<IncidentEntity> existing = incidentRepository.findBySourceAndEnvironmentIdAndFingerprint(
+                request.source(),
+                request.environmentId(),
+                request.fingerprint()
+        );
+        if (existing.isPresent()) {
+            return new IncidentCreationResult(toResponse(existing.get()), false);
+        }
+        try {
+            IncidentCreationResult created = requiresNewTx.execute(status -> createNewIncident(request));
+            if (created != null) {
+                return created;
+            }
+        } catch (DataIntegrityViolationException race) {
+            return incidentRepository
+                    .findBySourceAndEnvironmentIdAndFingerprint(
+                            request.source(),
+                            request.environmentId(),
+                            request.fingerprint()
+                    )
+                    .map(incident -> new IncidentCreationResult(toResponse(incident), false))
+                    .orElseThrow(() -> race);
+        }
+        throw new IllegalStateException("Incident creation transaction returned null");
     }
 
     @Transactional(readOnly = true)
@@ -55,12 +88,36 @@ public class IncidentService {
 
     @Transactional(readOnly = true)
     public List<IncidentResponse> findAll(String environmentId, IncidentStatus status, IncidentSeverity severity) {
-        return incidentRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")).stream()
-                .filter(incident -> environmentId == null || environmentId.isBlank() || environmentId.trim().equals(incident.getEnvironmentId()))
-                .filter(incident -> status == null || status == incident.getStatus())
-                .filter(incident -> severity == null || severity == incident.getSeverity())
+        Specification<IncidentEntity> spec = (root, query, cb) -> {
+            List<Predicate> predicates = new ArrayList<>();
+            if (environmentId != null && !environmentId.isBlank()) {
+                predicates.add(cb.equal(root.get("environmentId"), environmentId.trim()));
+            }
+            if (status != null) {
+                predicates.add(cb.equal(root.get("status"), status));
+            }
+            if (severity != null) {
+                predicates.add(cb.equal(root.get("severity"), severity));
+            }
+            return predicates.isEmpty() ? cb.conjunction() : cb.and(predicates.toArray(Predicate[]::new));
+        };
+        return incidentRepository.findAll(spec, Sort.by(Sort.Direction.DESC, "createdAt")).stream()
                 .map(this::toResponse)
                 .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public Map<UUID, IncidentResponse> findMapByEnvironmentIn(Collection<String> environmentIds) {
+        if (environmentIds == null || environmentIds.isEmpty()) {
+            return Map.of();
+        }
+        return incidentRepository.findByEnvironmentIdIn(environmentIds).stream()
+                .collect(Collectors.toMap(
+                        IncidentEntity::getId,
+                        this::toResponse,
+                        (first, second) -> first,
+                        LinkedHashMap::new
+                ));
     }
 
     @Transactional(readOnly = true)
@@ -79,19 +136,19 @@ public class IncidentService {
             return new CursorPageResponse<>(List.of(), null);
         }
 
-        Comparator<IncidentEntity> ordering = Comparator
-                .comparing((IncidentEntity i) -> i.getCreatedAt().toInstant())
-                .reversed()
-                .thenComparing(IncidentEntity::getId, Comparator.reverseOrder());
+        OffsetDateTime cursorCreatedAt = cursorToken == null
+                ? null
+                : OffsetDateTime.ofInstant(cursorToken.createdAt(), ZoneOffset.UTC);
+        UUID cursorId = cursorToken == null ? null : cursorToken.id();
 
-        List<IncidentEntity> matching = incidentRepository.findAll().stream()
-                .filter(incident -> scopedEnvs.contains(incident.getEnvironmentId()))
-                .filter(incident -> status == null || status == incident.getStatus())
-                .filter(incident -> severity == null || severity == incident.getSeverity())
-                .sorted(ordering)
-                .filter(incident -> isAfterCursor(incident, cursorToken))
-                .limit(effectiveLimit + 1L)
-                .toList();
+        List<IncidentEntity> matching = incidentRepository.findKeysetPage(
+                scopedEnvs,
+                status,
+                severity,
+                cursorCreatedAt,
+                cursorId,
+                effectiveLimit + 1
+        );
 
         boolean hasMore = matching.size() > effectiveLimit;
         List<IncidentEntity> pageEntities = hasMore ? matching.subList(0, effectiveLimit) : matching;
@@ -103,20 +160,6 @@ public class IncidentService {
                 .map(this::toResponse)
                 .toList();
         return new CursorPageResponse<>(items, nextCursor);
-    }
-
-    private boolean isAfterCursor(IncidentEntity incident, IncidentCursorCodec.CursorToken cursor) {
-        if (cursor == null) {
-            return true;
-        }
-        Instant incidentTime = incident.getCreatedAt().toInstant();
-        if (incidentTime.isBefore(cursor.createdAt())) {
-            return true;
-        }
-        if (incidentTime.equals(cursor.createdAt())) {
-            return incident.getId().compareTo(cursor.id()) < 0;
-        }
-        return false;
     }
 
     @Transactional(readOnly = true)
