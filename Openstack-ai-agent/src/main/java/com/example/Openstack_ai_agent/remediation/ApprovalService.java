@@ -7,8 +7,7 @@ import com.example.Openstack_ai_agent.incident.IncidentService;
 import com.example.Openstack_ai_agent.incident.IncidentStatus;
 import com.example.Openstack_ai_agent.incident.IncidentWorkflowEvent;
 import com.example.Openstack_ai_agent.incident.TransitionIncidentRequest;
-import com.example.Openstack_ai_agent.observability.DashboardEventEntity;
-import com.example.Openstack_ai_agent.observability.DashboardEventRepository;
+import com.example.Openstack_ai_agent.observability.DashboardEventPublisher;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -32,7 +31,7 @@ public class ApprovalService {
     private final ProposedActionRepository proposedActionRepository;
     private final ApprovalDecisionRepository approvalDecisionRepository;
     private final IncidentService incidentService;
-    private final DashboardEventRepository dashboardEventRepository;
+    private final DashboardEventPublisher dashboardEventPublisher;
     private final PolicyEvaluator policyEvaluator;
     private final ActionCatalogValidator actionCatalogValidator;
     private final AuditService auditService;
@@ -41,7 +40,7 @@ public class ApprovalService {
             ProposedActionRepository proposedActionRepository,
             ApprovalDecisionRepository approvalDecisionRepository,
             IncidentService incidentService,
-            DashboardEventRepository dashboardEventRepository,
+            DashboardEventPublisher dashboardEventPublisher,
             PolicyEvaluator policyEvaluator,
             ActionCatalogValidator actionCatalogValidator,
             AuditService auditService
@@ -49,7 +48,7 @@ public class ApprovalService {
         this.proposedActionRepository = proposedActionRepository;
         this.approvalDecisionRepository = approvalDecisionRepository;
         this.incidentService = incidentService;
-        this.dashboardEventRepository = dashboardEventRepository;
+        this.dashboardEventPublisher = dashboardEventPublisher;
         this.policyEvaluator = policyEvaluator;
         this.actionCatalogValidator = actionCatalogValidator;
         this.auditService = auditService;
@@ -231,13 +230,13 @@ public class ApprovalService {
         dashboardPayload.put("version", savedAction.getVersion());
         dashboardPayload.put("policyVersion", policyDecision.policyVersion());
         dashboardPayload.put("ruleId", policyDecision.ruleId());
-        dashboardEventRepository.save(DashboardEventEntity.of(
+        dashboardEventPublisher.publish(
                 incident.environmentId(),
                 "approval.updated",
                 incident.id(),
                 incident.traceId(),
                 dashboardPayload
-        ));
+        );
 
         Map<String, String> transitionMetadata = new LinkedHashMap<>();
         transitionMetadata.put("actionId", savedAction.getId().toString());

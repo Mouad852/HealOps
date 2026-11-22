@@ -6,8 +6,7 @@ import com.example.Openstack_ai_agent.evidence.EvidenceItemEntity;
 import com.example.Openstack_ai_agent.evidence.EvidenceItemRepository;
 import com.example.Openstack_ai_agent.incident.IncidentEntity;
 import com.example.Openstack_ai_agent.incident.IncidentRepository;
-import com.example.Openstack_ai_agent.observability.DashboardEventEntity;
-import com.example.Openstack_ai_agent.observability.DashboardEventRepository;
+import com.example.Openstack_ai_agent.observability.DashboardEventPublisher;
 import com.example.Openstack_ai_agent.remediation.ToolExecutionEntity;
 import com.example.Openstack_ai_agent.remediation.ToolExecutionRepository;
 import org.springframework.stereotype.Service;
@@ -35,7 +34,7 @@ public class ConversationPersistenceService {
     private final EvidenceItemRepository evidenceItemRepository;
     private final DiagnosisRepository diagnosisRepository;
     private final ToolExecutionRepository toolExecutionRepository;
-    private final DashboardEventRepository dashboardEventRepository;
+    private final DashboardEventPublisher dashboardEventPublisher;
     private final ConversationSanitizer sanitizer;
 
     public ConversationPersistenceService(
@@ -45,7 +44,7 @@ public class ConversationPersistenceService {
             EvidenceItemRepository evidenceItemRepository,
             DiagnosisRepository diagnosisRepository,
             ToolExecutionRepository toolExecutionRepository,
-            DashboardEventRepository dashboardEventRepository,
+            DashboardEventPublisher dashboardEventPublisher,
             ConversationSanitizer sanitizer
     ) {
         this.sessionRepository = sessionRepository;
@@ -54,7 +53,7 @@ public class ConversationPersistenceService {
         this.evidenceItemRepository = evidenceItemRepository;
         this.diagnosisRepository = diagnosisRepository;
         this.toolExecutionRepository = toolExecutionRepository;
-        this.dashboardEventRepository = dashboardEventRepository;
+        this.dashboardEventPublisher = dashboardEventPublisher;
         this.sanitizer = sanitizer;
     }
 
@@ -134,13 +133,13 @@ public class ConversationPersistenceService {
                 tokenPayload.put("role", finalMessage.getMessageRole().name());
                 tokenPayload.put("chunkIndex", i);
                 tokenPayload.put("token", chunks.get(i));
-                dashboardEventRepository.save(DashboardEventEntity.of(
+                dashboardEventPublisher.publish(
                         environmentId,
                         "conversation.token",
                         incidentId,
                         traceId,
                         tokenPayload
-                ));
+                );
             }
 
             Map<String, Object> completedPayload = new LinkedHashMap<>();
@@ -156,13 +155,13 @@ public class ConversationPersistenceService {
             if (finalMessage.getExecutionId() != null) {
                 completedPayload.put("executionId", finalMessage.getExecutionId().toString());
             }
-            dashboardEventRepository.save(DashboardEventEntity.of(
+            dashboardEventPublisher.publish(
                     environmentId,
                     "conversation.completed",
                     incidentId,
                     traceId,
                     completedPayload
-            ));
+            );
         }
     }
 

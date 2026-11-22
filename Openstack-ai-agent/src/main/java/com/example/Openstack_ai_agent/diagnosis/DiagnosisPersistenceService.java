@@ -2,8 +2,7 @@ package com.example.Openstack_ai_agent.diagnosis;
 
 import com.example.Openstack_ai_agent.incident.IncidentResponse;
 import com.example.Openstack_ai_agent.incident.IncidentService;
-import com.example.Openstack_ai_agent.observability.DashboardEventEntity;
-import com.example.Openstack_ai_agent.observability.DashboardEventRepository;
+import com.example.Openstack_ai_agent.observability.DashboardEventPublisher;
 import com.example.Openstack_ai_agent.remediation.ActionCatalogValidator;
 import com.example.Openstack_ai_agent.remediation.ActionType;
 import com.example.Openstack_ai_agent.remediation.ProposedActionEntity;
@@ -21,20 +20,20 @@ import java.util.UUID;
 public class DiagnosisPersistenceService {
     private final DiagnosisRepository diagnosisRepository;
     private final ProposedActionRepository proposedActionRepository;
-    private final DashboardEventRepository dashboardEventRepository;
+    private final DashboardEventPublisher dashboardEventPublisher;
     private final IncidentService incidentService;
     private final ActionCatalogValidator actionCatalogValidator;
 
     public DiagnosisPersistenceService(
             DiagnosisRepository diagnosisRepository,
             ProposedActionRepository proposedActionRepository,
-            DashboardEventRepository dashboardEventRepository,
+            DashboardEventPublisher dashboardEventPublisher,
             IncidentService incidentService,
             ActionCatalogValidator actionCatalogValidator
     ) {
         this.diagnosisRepository = diagnosisRepository;
         this.proposedActionRepository = proposedActionRepository;
-        this.dashboardEventRepository = dashboardEventRepository;
+        this.dashboardEventPublisher = dashboardEventPublisher;
         this.incidentService = incidentService;
         this.actionCatalogValidator = actionCatalogValidator;
     }
@@ -76,13 +75,13 @@ public class DiagnosisPersistenceService {
             payload.put("status", savedAction.getStatus().name());
             payload.put("version", savedAction.getVersion());
 
-            dashboardEventRepository.save(DashboardEventEntity.of(
+            dashboardEventPublisher.publish(
                     incident.environmentId(),
                     "approval.created",
                     incident.id(),
                     incident.traceId(),
                     payload
-            ));
+            );
         }
 
         return new PersistedDiagnosisResult(

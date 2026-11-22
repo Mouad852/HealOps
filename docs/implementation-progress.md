@@ -145,7 +145,24 @@ Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 47/47 tests across
 
 Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 57/57 tests across all 15 test suites on 2026-11-22.
 
+### Phase 8: Dashboard BFF API, Replayable Live-Event SSE Channel (`Last-Event-ID`), & Bounded Observability Query Services
+
+- Implemented Environment Catalog (`com.example.Openstack_ai_agent.environment`): mapped `EnvironmentEntity` (`environments` table from `V3` under `ddl-auto=validate`), `EnvironmentRepository`, idempotent startup seeding for `local` and `staging` environments (zero secrets stored), and `GET /api/v1/environments` (`incident:read`) filtered strictly by caller's `env:*` authorities.
+- Implemented Replayable Live-Event SSE Channel (`GET /api/v1/events?environmentId=`):
+  - Enforces `incident:read` and `env:<environmentId>` (`403 Forbidden` for unauthorized environments), rejects bearer tokens in SSE query parameters (`400 Bad Request`), and validates `Last-Event-ID` safely as a non-negative monotonic `sequenceNumber` (`400 Bad Request` on invalid values).
+  - Added versioned `DashboardEventEnvelope` (`schemaVersion: "v1"`, `id`, `sequenceNumber`, `type`, `occurredAt`, `environmentId`, `incidentId`, `traceId`, `entityVersion`, `payload`), `DashboardSseRegistry` (replay-to-live deduplication without gaps/duplicates, `onCompletion`/`onTimeout`/`onError` eviction, configurable `: heartbeat` comments), and shared `DashboardEventPublisher` wired across incident, diagnosis/approval, tool-execution, health-snapshot (`service-health.updated`), and conversation producers with post-commit SSE fan-out.
+- Implemented Dashboard Overview (`GET /api/v1/overview?environmentId=`) returning presentation-neutral summary DTOs (authorized environments, active/total incident counts by status/severity, pending approval count, per-service health cards, and remediation analytics) and standardized cursor pagination (`CursorPageResponse<T>` `{items, nextCursor}` + `IncidentCursorCodec` with strict 1–100 limit cap and `400 Bad Request` on abusive/corrupt inputs) on `GET /api/v1/incidents` and `GET /api/v1/incidents/page`.
+- Implemented Bounded Observability BFF Query Services (`ObservabilityController`, `ObservabilityBackendClient` using Spring-managed `WebClient.Builder` `builder.clone().baseUrl(...)` guarded by `healops.observability.live-query-enabled`, `ObservabilityQueryValidator` enforcing 24h max window, safe identifier regex, and point/record limits):
+  - `GET /api/v1/metrics/range` (allowlisted `cpu_percent`, `memory_percent`, `error_rate`, `latency_ms`, `restarts` only; downsampled presentation-neutral series DTO, no raw PromQL or Chart.js config).
+  - `GET /api/v1/logs` (sanitized/redacted bounded Loki/evidence log records, no raw LogQL).
+  - `GET /api/v1/traces` & `GET /api/v1/traces/{traceId}` (Jaeger v3 `/api/v3/**` OTLP parser producing span tree, critical path, and slowest spans).
+  - `GET /api/v1/topology` (presentation-neutral service nodes/edges and health derived from trace spans and incidents, never calling Jaeger internal `/api/dependencies` or emitting Cytoscape config).
+- Hardened `agentUI/nginx.conf` with a dedicated `location = /api/v1/events` SSE proxy block (`proxy_buffering off`, `proxy_cache off`, `proxy_read_timeout 86400s`, HTTP/1.1 keepalive, `X-Accel-Buffering no`, and explicit `Last-Event-ID` header forwarding).
+- Added unit and integration tests (`IncidentCursorCodecTest`, `ObservabilityQueryValidatorTest`, `TraceAnalysisCalculatorTest`, `TopologyDerivationServiceTest`, `DashboardSseRegistryTest`, and `Phase8IntegrationTest`).
+
+Verification: `cd Openstack-ai-agent; .\mvnw.cmd test` passed 73/73 tests across all 21 test suites on 2026-11-22.
+
 ## Next milestone
 
-Implement Phase 8 replayable SSE dashboard event stream (`GET /api/v1/events?environmentId=` with `Last-Event-ID`), cursor-paginated overview/topology/metrics/trace BFF APIs, and Phase 9 Angular dashboard integration.
+Complete Phase 9 Angular 19 Operational Dashboard integration against the Phase 8 BFF and SSE endpoints.
 

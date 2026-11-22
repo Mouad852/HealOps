@@ -4,6 +4,7 @@ import com.example.Openstack_ai_agent.evidence.CorrelationService;
 import com.example.Openstack_ai_agent.evidence.EvidenceItemResponse;
 import com.example.Openstack_ai_agent.incident.IncidentResponse;
 import com.example.Openstack_ai_agent.incident.IncidentService;
+import com.example.Openstack_ai_agent.observability.DashboardEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,13 +17,16 @@ import java.util.UUID;
 public class HealthSnapshotService {
     private final HealthSnapshotRepository healthSnapshotRepository;
     private final IncidentService incidentService;
+    private final DashboardEventPublisher dashboardEventPublisher;
 
     public HealthSnapshotService(
             HealthSnapshotRepository healthSnapshotRepository,
-            IncidentService incidentService
+            IncidentService incidentService,
+            DashboardEventPublisher dashboardEventPublisher
     ) {
         this.healthSnapshotRepository = healthSnapshotRepository;
         this.incidentService = incidentService;
+        this.dashboardEventPublisher = dashboardEventPublisher;
     }
 
     @Transactional
@@ -69,7 +73,21 @@ public class HealthSnapshotService {
                 phase,
                 signals
         );
-        return HealthSnapshotResponse.from(healthSnapshotRepository.save(entity));
+        HealthSnapshotEntity saved = healthSnapshotRepository.save(entity);
+        Map<String, Object> healthEventPayload = new LinkedHashMap<>();
+        healthEventPayload.put("snapshotId", saved.getId().toString());
+        healthEventPayload.put("phase", phase.name());
+        healthEventPayload.put("service", incident.service());
+        healthEventPayload.put("healthStatus", signals.getOrDefault("healthStatus", "UNKNOWN"));
+        healthEventPayload.put("telemetryStatus", signals.getOrDefault("telemetryStatus", "UNKNOWN"));
+        dashboardEventPublisher.publish(
+                incident.environmentId(),
+                "service-health.updated",
+                incident.id(),
+                incident.traceId(),
+                healthEventPayload
+        );
+        return HealthSnapshotResponse.from(saved);
     }
 
     @Transactional(readOnly = true)

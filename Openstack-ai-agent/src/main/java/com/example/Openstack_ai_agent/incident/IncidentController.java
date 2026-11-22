@@ -1,5 +1,6 @@
 package com.example.Openstack_ai_agent.incident;
 
+import com.example.Openstack_ai_agent.common.api.CursorPageResponse;
 import com.example.Openstack_ai_agent.evidence.EvidenceCollectionService;
 import com.example.Openstack_ai_agent.evidence.EvidenceItemResponse;
 import jakarta.validation.Valid;
@@ -44,8 +45,7 @@ public class IncidentController {
     @PreAuthorize("hasAuthority('incident:write')")
     public ResponseEntity<List<IncidentResponse>> ingestAlertmanagerWebhook(
             @Valid @RequestBody AlertmanagerWebhookRequest webhook,
-            @RequestParam(defaultValue = "local") String defaultEnvironmentId
-    ) {
+            @RequestParam(defaultValue = "local") String defaultEnvironmentId) {
         List<IncidentResponse> results = new ArrayList<>();
         for (AlertmanagerWebhookRequest.AlertItem alert : webhook.alerts()) {
             if (alert.status() != null && !alert.status().equalsIgnoreCase("firing")) {
@@ -58,11 +58,30 @@ public class IncidentController {
 
     @GetMapping
     @PreAuthorize("hasAuthority('incident:read')")
-    public List<IncidentResponse> findAll(
+    public ResponseEntity<?> findAll(
             @RequestParam(required = false) String environmentId,
-            @RequestParam(required = false) IncidentStatus status
-    ) {
-        return incidentService.findAll(environmentId, status);
+            @RequestParam(required = false) IncidentStatus status,
+            @RequestParam(required = false) IncidentSeverity severity,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer limit,
+            Authentication authentication) {
+        if (cursor != null || limit != null) {
+            return ResponseEntity
+                    .ok(incidentService.findPage(environmentId, status, severity, cursor, limit, authentication));
+        }
+        return ResponseEntity.ok(incidentService.findAll(environmentId, status, severity));
+    }
+
+    @GetMapping("/page")
+    @PreAuthorize("hasAuthority('incident:read')")
+    public CursorPageResponse<IncidentResponse> findPage(
+            @RequestParam(required = false) String environmentId,
+            @RequestParam(required = false) IncidentStatus status,
+            @RequestParam(required = false) IncidentSeverity severity,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer limit,
+            Authentication authentication) {
+        return incidentService.findPage(environmentId, status, severity, cursor, limit, authentication);
     }
 
     @GetMapping("/{incidentId}")
@@ -76,8 +95,7 @@ public class IncidentController {
     public IncidentResponse transition(
             @PathVariable UUID incidentId,
             @Valid @RequestBody TransitionIncidentRequest request,
-            Authentication authentication
-    ) {
+            Authentication authentication) {
         String authenticatedActor = authentication != null && authentication.getName() != null
                 ? authentication.getName()
                 : request.actor();
@@ -88,8 +106,7 @@ public class IncidentController {
                 request.reason(),
                 request.traceId(),
                 request.metadata(),
-                request.expectedVersion()
-        );
+                request.expectedVersion());
         return incidentService.transition(incidentId, governed);
     }
 
@@ -98,8 +115,7 @@ public class IncidentController {
     public IncidentResponse retry(
             @PathVariable UUID incidentId,
             @Valid @RequestBody RetryIncidentRequest request,
-            Authentication authentication
-    ) {
+            Authentication authentication) {
         String actor = authentication != null && authentication.getName() != null
                 ? authentication.getName()
                 : "operator";
@@ -126,7 +142,6 @@ public class IncidentController {
 
     public record RetryIncidentRequest(
             @Size(max = 500) String reason,
-            @PositiveOrZero long expectedVersion
-    ) {
+            @PositiveOrZero long expectedVersion) {
     }
 }

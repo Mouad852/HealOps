@@ -126,10 +126,15 @@ class IncidentOrchestrationIntegrationTest {
         assertThat(persistedEvidenceIds).containsAll(diagnoses.getFirst().citedEvidenceIds());
 
         assertThat(diagnosisPersistenceService.findProposedActions(incidentId)).isEmpty();
-        assertThat(dashboardEventRepository.findByIncidentIdOrderBySequenceNumberAsc(incidentId))
+        List<DashboardEventEntity> incidentDashboardEvents = dashboardEventRepository.findByIncidentIdOrderBySequenceNumberAsc(incidentId);
+        assertThat(incidentDashboardEvents)
                 .extracting(DashboardEventEntity::getEventType)
                 .doesNotContain("approval.created")
-                .hasSize(6);
+                .contains("service-health.updated");
+        assertThat(incidentDashboardEvents.stream().filter(e -> "incident.updated".equals(e.getEventType())).count())
+                .isEqualTo(6L);
+        assertThat(incidentDashboardEvents.stream().filter(e -> "service-health.updated".equals(e.getEventType())).count())
+                .isEqualTo(2L);
 
         mockMvc.perform(get("/api/v1/incidents/{incidentId}/diagnoses", incidentId))
                 .andExpect(status().isOk())

@@ -15,8 +15,7 @@ import com.example.Openstack_ai_agent.incident.IncidentService;
 import com.example.Openstack_ai_agent.incident.IncidentStatus;
 import com.example.Openstack_ai_agent.incident.IncidentWorkflowEvent;
 import com.example.Openstack_ai_agent.incident.TransitionIncidentRequest;
-import com.example.Openstack_ai_agent.observability.DashboardEventEntity;
-import com.example.Openstack_ai_agent.observability.DashboardEventRepository;
+import com.example.Openstack_ai_agent.observability.DashboardEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -41,7 +40,7 @@ public class RemediationOrchestrationService {
     private final ProposedActionRepository proposedActionRepository;
     private final ToolExecutionRepository toolExecutionRepository;
     private final RemediationOutcomeRepository remediationOutcomeRepository;
-    private final DashboardEventRepository dashboardEventRepository;
+    private final DashboardEventPublisher dashboardEventPublisher;
     private final IncidentService incidentService;
     private final HealthSnapshotService healthSnapshotService;
     private final HealthVerificationComparator healthVerificationComparator;
@@ -52,7 +51,7 @@ public class RemediationOrchestrationService {
             ProposedActionRepository proposedActionRepository,
             ToolExecutionRepository toolExecutionRepository,
             RemediationOutcomeRepository remediationOutcomeRepository,
-            DashboardEventRepository dashboardEventRepository,
+            DashboardEventPublisher dashboardEventPublisher,
             IncidentService incidentService,
             HealthSnapshotService healthSnapshotService,
             HealthVerificationComparator healthVerificationComparator,
@@ -62,7 +61,7 @@ public class RemediationOrchestrationService {
         this.proposedActionRepository = proposedActionRepository;
         this.toolExecutionRepository = toolExecutionRepository;
         this.remediationOutcomeRepository = remediationOutcomeRepository;
-        this.dashboardEventRepository = dashboardEventRepository;
+        this.dashboardEventPublisher = dashboardEventPublisher;
         this.incidentService = incidentService;
         this.healthSnapshotService = healthSnapshotService;
         this.healthVerificationComparator = healthVerificationComparator;
@@ -625,13 +624,13 @@ public class RemediationOrchestrationService {
         payload.put("attempt", execution.getAttempt());
         payload.put("idempotencyKey", execution.getIdempotencyKey());
         payload.put("status", execution.getStatus().name());
-        dashboardEventRepository.save(DashboardEventEntity.of(
+        dashboardEventPublisher.publish(
                 incident.environmentId(),
                 "tool-execution.updated",
                 incident.id(),
                 incident.traceId(),
                 payload
-        ));
+        );
     }
 
     @SuppressWarnings("unchecked")

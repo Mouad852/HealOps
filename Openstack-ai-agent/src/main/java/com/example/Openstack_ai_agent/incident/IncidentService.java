@@ -1,36 +1,41 @@
 package com.example.Openstack_ai_agent.incident;
 
-import com.example.Openstack_ai_agent.observability.DashboardEventEntity;
-import com.example.Openstack_ai_agent.observability.DashboardEventRepository;
+import com.example.Openstack_ai_agent.common.api.CursorPageResponse;
+import com.example.Openstack_ai_agent.common.api.EnvironmentAuthorizationSupport;
+import com.example.Openstack_ai_agent.observability.DashboardEventPublisher;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Sort;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
 public class IncidentService {
     private final IncidentRepository incidentRepository;
     private final IncidentEventRepository incidentEventRepository;
-    private final DashboardEventRepository dashboardEventRepository;
+    private final DashboardEventPublisher dashboardEventPublisher;
     private final ApplicationEventPublisher eventPublisher;
     private final boolean autoOrchestrate;
 
     public IncidentService(
             IncidentRepository incidentRepository,
             IncidentEventRepository incidentEventRepository,
-            DashboardEventRepository dashboardEventRepository,
+            DashboardEventPublisher dashboardEventPublisher,
             ApplicationEventPublisher eventPublisher,
             @Value("${healops.workflow.auto-orchestrate:true}") boolean autoOrchestrate
     ) {
         this.incidentRepository = incidentRepository;
         this.incidentEventRepository = incidentEventRepository;
-        this.dashboardEventRepository = dashboardEventRepository;
+        this.dashboardEventPublisher = dashboardEventPublisher;
         this.eventPublisher = eventPublisher;
         this.autoOrchestrate = autoOrchestrate;
     }
@@ -45,11 +50,73 @@ public class IncidentService {
 
     @Transactional(readOnly = true)
     public List<IncidentResponse> findAll(String environmentId, IncidentStatus status) {
+        return findAll(environmentId, status, null);
+    }
+
+    @Transactional(readOnly = true)
+    public List<IncidentResponse> findAll(String environmentId, IncidentStatus status, IncidentSeverity severity) {
         return incidentRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")).stream()
-                .filter(incident -> environmentId == null || environmentId.equals(incident.getEnvironmentId()))
+                .filter(incident -> environmentId == null || environmentId.isBlank() || environmentId.trim().equals(incident.getEnvironmentId()))
                 .filter(incident -> status == null || status == incident.getStatus())
+                .filter(incident -> severity == null || severity == incident.getSeverity())
                 .map(this::toResponse)
                 .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public CursorPageResponse<IncidentResponse> findPage(
+            String environmentId,
+            IncidentStatus status,
+            IncidentSeverity severity,
+            String cursor,
+            Integer limit,
+            Authentication authentication
+    ) {
+        int effectiveLimit = IncidentCursorCodec.resolveLimit(limit);
+        IncidentCursorCodec.CursorToken cursorToken = IncidentCursorCodec.decode(cursor);
+        Set<String> scopedEnvs = EnvironmentAuthorizationSupport.resolveAuthorizedScope(environmentId, authentication);
+        if (scopedEnvs.isEmpty()) {
+            return new CursorPageResponse<>(List.of(), null);
+        }
+
+        Comparator<IncidentEntity> ordering = Comparator
+                .comparing((IncidentEntity i) -> i.getCreatedAt().toInstant())
+                .reversed()
+                .thenComparing(IncidentEntity::getId, Comparator.reverseOrder());
+
+        List<IncidentEntity> matching = incidentRepository.findAll().stream()
+                .filter(incident -> scopedEnvs.contains(incident.getEnvironmentId()))
+                .filter(incident -> status == null || status == incident.getStatus())
+                .filter(incident -> severity == null || severity == incident.getSeverity())
+                .sorted(ordering)
+                .filter(incident -> isAfterCursor(incident, cursorToken))
+                .limit(effectiveLimit + 1L)
+                .toList();
+
+        boolean hasMore = matching.size() > effectiveLimit;
+        List<IncidentEntity> pageEntities = hasMore ? matching.subList(0, effectiveLimit) : matching;
+        String nextCursor = hasMore && !pageEntities.isEmpty()
+                ? IncidentCursorCodec.encode(pageEntities.getLast().getCreatedAt(), pageEntities.getLast().getId())
+                : null;
+
+        List<IncidentResponse> items = pageEntities.stream()
+                .map(this::toResponse)
+                .toList();
+        return new CursorPageResponse<>(items, nextCursor);
+    }
+
+    private boolean isAfterCursor(IncidentEntity incident, IncidentCursorCodec.CursorToken cursor) {
+        if (cursor == null) {
+            return true;
+        }
+        Instant incidentTime = incident.getCreatedAt().toInstant();
+        if (incidentTime.isBefore(cursor.createdAt())) {
+            return true;
+        }
+        if (incidentTime.equals(cursor.createdAt())) {
+            return incident.getId().compareTo(cursor.id()) < 0;
+        }
+        return false;
     }
 
     @Transactional(readOnly = true)
@@ -223,13 +290,13 @@ public class IncidentService {
         payload.put("version", incident.getVersion());
         payload.put("workflowEvent", eventType);
         payload.put("actor", actor);
-        dashboardEventRepository.save(DashboardEventEntity.of(
+        dashboardEventPublisher.publish(
                 incident.getEnvironmentId(),
                 "incident.updated",
                 incident.getId(),
                 incident.getTraceId(),
                 payload
-        ));
+        );
     }
 
     private int parseIntOrZero(String value) {
