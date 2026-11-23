@@ -64,7 +64,7 @@ public class EvidenceItemEntity {
     protected EvidenceItemEntity() {
     }
 
-    static EvidenceItemEntity from(
+    public static EvidenceItemEntity from(
             UUID incidentId,
             EvidenceCandidate candidate,
             String sanitizedExcerpt,

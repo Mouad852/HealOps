@@ -22,6 +22,11 @@ public class TraceEvidenceCollector extends AdapterEvidenceCollectorSupport impl
     }
 
     @Override
+    public boolean supportsVerification() {
+        return false;
+    }
+
+    @Override
     public List<EvidenceCandidate> collect(IncidentResponse incident) {
         return List.of(candidate(EvidenceType.TRACE, "tracing", incident,
                 adapterClient.traceDetails(incident.traceId())));

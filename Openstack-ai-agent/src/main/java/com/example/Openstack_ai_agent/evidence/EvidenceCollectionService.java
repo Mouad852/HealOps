@@ -53,7 +53,7 @@ public class EvidenceCollectionService {
 
         List<EvidenceItemResponse> collected = new ArrayList<>();
         for (EvidenceCollector collector : collectors) {
-            if (!includeAlertContext && collector instanceof AlertContextEvidenceCollector) {
+            if (!includeAlertContext && (!collector.supportsVerification() || collector instanceof AlertContextEvidenceCollector)) {
                 continue;
             }
             if (!collector.supports(incident)) {

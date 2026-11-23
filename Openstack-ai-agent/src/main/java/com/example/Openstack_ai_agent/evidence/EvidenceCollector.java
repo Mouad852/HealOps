@@ -7,5 +7,9 @@ import java.util.List;
 public interface EvidenceCollector {
     boolean supports(IncidentResponse incident);
 
+    default boolean supportsVerification() {
+        return true;
+    }
+
     List<EvidenceCandidate> collect(IncidentResponse incident);
 }

@@ -53,6 +53,18 @@ public class EvidenceAdapterClient {
         return get(kubernetesClient, "/k8s/pods?namespace={namespace}", namespace);
     }
 
+    public JsonNode kubernetesDeployment(String namespace, String deployment) {
+        return get(kubernetesClient, "/k8s/deployments/{namespace}/{deployment}", namespace, deployment);
+    }
+
+    public JsonNode kubernetesEvents(String namespace, int limit) {
+        return get(kubernetesClient, "/k8s/events?namespace={namespace}&limit={limit}", namespace, limit);
+    }
+
+    public JsonNode kubernetesPodLogs(String namespace, String pod, int tail) {
+        return get(kubernetesClient, "/k8s/pods/{namespace}/{pod}/logs?tail={tail}", namespace, pod, tail);
+    }
+
     public JsonNode openstackEvents() {
         return get(openstackClient, "/api/v1/openstack/events");
     }

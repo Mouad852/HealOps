@@ -16,6 +16,11 @@ public class AlertContextEvidenceCollector implements EvidenceCollector {
     }
 
     @Override
+    public boolean supportsVerification() {
+        return false;
+    }
+
+    @Override
     public List<EvidenceCandidate> collect(IncidentResponse incident) {
         String excerpt = "Alert context captured for service " + incident.service()
                 + " in environment " + incident.environmentId()
