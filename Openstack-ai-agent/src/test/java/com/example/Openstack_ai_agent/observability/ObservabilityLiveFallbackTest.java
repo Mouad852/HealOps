@@ -249,6 +249,45 @@ class ObservabilityLiveFallbackTest {
         verify(backendClient, never()).queryJaegerV3Traces(eq(null), any(), any(), anyInt());
     }
 
+    @Test
+    void backendClientProperlyEncodesCurlyBracesInLokiAndPrometheusQueries() {
+        ObservabilityQueryProperties liveProps = new ObservabilityQueryProperties();
+        liveProps.setLiveQueryEnabled(true);
+        java.util.List<java.net.URI> capturedUris = new java.util.ArrayList<>();
+        org.springframework.web.reactive.function.client.ExchangeFunction exchange = request -> {
+            capturedUris.add(request.url());
+            return reactor.core.publisher.Mono.just(
+                    org.springframework.web.reactive.function.client.ClientResponse
+                            .create(org.springframework.http.HttpStatus.OK)
+                            .header("Content-Type", "application/json")
+                            .body("{\"status\":\"success\",\"data\":{\"result\":[]}}")
+                            .build()
+            );
+        };
+        WebClient.Builder webClientBuilder = WebClient.builder().exchangeFunction(exchange);
+        ObservabilityBackendClient client = new ObservabilityBackendClient(webClientBuilder, liveProps, objectMapper);
+
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        Optional<JsonNode> loki = client.queryLokiRange(
+                "{deployment_environment=\"demo\", service_name=\"demo-workload\"} |= \"abc123\"",
+                now.minusMinutes(10),
+                now,
+                20
+        );
+        Optional<JsonNode> prom = client.queryPrometheusRange(
+                "avg(rate(http_server_requests_seconds_count{service=\"demo-workload\"}[5m]))",
+                now.minusMinutes(10),
+                now,
+                60
+        );
+
+        assertThat(loki).isPresent();
+        assertThat(prom).isPresent();
+        assertThat(capturedUris).hasSize(2);
+        assertThat(capturedUris.get(0).toString()).contains("/loki/api/v1/query_range").contains("query=");
+        assertThat(capturedUris.get(1).toString()).contains("/api/v1/query_range").contains("query=");
+    }
+
     private Authentication demoAuth() {
         return new UsernamePasswordAuthenticationToken(
                 "viewer",

@@ -51,6 +51,27 @@ public class ObservabilityBackendClient {
         return properties.isLiveQueryEnabled();
     }
 
+    public Optional<JsonNode> queryPrometheusInstant(String allowlistedPromQl) {
+        if (!properties.isLiveQueryEnabled()) {
+            return Optional.empty();
+        }
+        try {
+            JsonNode response = prometheusClient.get()
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/api/v1/query")
+                            .queryParam("query", "{promQuery}")
+                            .build(allowlistedPromQl))
+                    .retrieve()
+                    .bodyToMono(JsonNode.class)
+                    .timeout(properties.getTimeout())
+                    .block();
+            return Optional.ofNullable(response);
+        } catch (Exception ex) {
+            log.warn("Prometheus instant query failed: {}", ex.getMessage());
+            return Optional.empty();
+        }
+    }
+
     public Optional<JsonNode> queryPrometheusRange(
             String allowlistedPromQl,
             OffsetDateTime from,
@@ -64,11 +85,11 @@ public class ObservabilityBackendClient {
             JsonNode response = prometheusClient.get()
                     .uri(uriBuilder -> uriBuilder
                             .path("/api/v1/query_range")
-                            .queryParam("query", allowlistedPromQl)
+                            .queryParam("query", "{promQuery}")
                             .queryParam("start", from.toEpochSecond())
                             .queryParam("end", to.toEpochSecond())
                             .queryParam("step", stepSeconds)
-                            .build())
+                            .build(allowlistedPromQl))
                     .retrieve()
                     .bodyToMono(JsonNode.class)
                     .timeout(properties.getTimeout())
@@ -95,12 +116,12 @@ public class ObservabilityBackendClient {
             JsonNode response = lokiClient.get()
                     .uri(uriBuilder -> uriBuilder
                             .path("/loki/api/v1/query_range")
-                            .queryParam("query", constructedSelector)
+                            .queryParam("query", "{lokiQuery}")
                             .queryParam("start", startNs)
                             .queryParam("end", endNs)
                             .queryParam("limit", limit)
                             .queryParam("direction", "backward")
-                            .build())
+                            .build(constructedSelector))
                     .retrieve()
                     .bodyToMono(JsonNode.class)
                     .timeout(properties.getTimeout())

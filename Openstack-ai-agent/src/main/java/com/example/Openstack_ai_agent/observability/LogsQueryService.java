@@ -7,7 +7,6 @@ import com.example.Openstack_ai_agent.evidence.EvidenceItemRepository;
 import com.example.Openstack_ai_agent.evidence.RedactionStatus;
 import com.example.Openstack_ai_agent.incident.IncidentEntity;
 import com.example.Openstack_ai_agent.incident.IncidentRepository;
-import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
@@ -15,23 +14,17 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionOperations;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
 public class LogsQueryService {
-    private static final int MAX_LOG_MESSAGE_CHARS = 2048;
-
     private final ObservabilityQueryValidator validator;
     private final ObservabilityBackendClient backendClient;
     private final IncidentRepository incidentRepository;
@@ -100,24 +93,16 @@ public class LogsQueryService {
         int effectiveLimit = validator.resolveLogLimit(limit);
 
         if (backendClient.isLiveQueryEnabled() && incidentId == null) {
-            String selector = buildStrictLokiSelector(authorizedEnv, validatedService, validatedTraceId);
-            Optional<JsonNode> lokiResponse = backendClient.queryLokiRange(selector, range.from(), range.to(), effectiveLimit + 1);
-            List<LogQueryResponse.LogRecordDto> lokiRecords = lokiResponse
-                    .map(json -> parseLokiRecords(json, validatedService, validatedTraceId))
-                    .orElse(List.of());
-
-            if (lokiRecords.isEmpty() && validatedService != null) {
-                String serviceOnlySelector = buildServiceOnlyLokiSelector(validatedService, validatedTraceId);
-                Optional<JsonNode> fallbackLoki = backendClient.queryLokiRange(
-                        serviceOnlySelector,
-                        range.from(),
-                        range.to(),
-                        effectiveLimit + 1
-                );
-                if (fallbackLoki.isPresent()) {
-                    lokiRecords = parseLokiRecords(fallbackLoki.get(), validatedService, validatedTraceId);
-                }
-            }
+            List<LogQueryResponse.LogRecordDto> lokiRecords = LokiLogSupport.queryLokiStrictWithServiceFallback(
+                    backendClient,
+                    authorizedEnv,
+                    validatedService,
+                    validatedTraceId,
+                    range.from(),
+                    range.to(),
+                    effectiveLimit + 1,
+                    sanitizer
+            );
 
             if (!lokiRecords.isEmpty()) {
                 boolean truncated = lokiRecords.size() > effectiveLimit;
@@ -157,80 +142,6 @@ public class LogsQueryService {
                 "LOCAL_EVIDENCE",
                 bounded
         );
-    }
-
-    private String buildStrictLokiSelector(String environmentId, String service, String traceId) {
-        List<String> matchers = new ArrayList<>();
-        matchers.add("deployment_environment=\"" + environmentId + "\"");
-        if (service != null) {
-            matchers.add("service_name=\"" + service + "\"");
-        }
-        String selector = "{" + String.join(", ", matchers) + "}";
-        if (traceId != null) {
-            selector = selector + " |= \"" + traceId + "\"";
-        }
-        return selector;
-    }
-
-    private String buildServiceOnlyLokiSelector(String service, String traceId) {
-        String selector = "{service_name=\"" + service + "\"}";
-        if (traceId != null) {
-            selector = selector + " |= \"" + traceId + "\"";
-        }
-        return selector;
-    }
-
-    private List<LogQueryResponse.LogRecordDto> parseLokiRecords(
-            JsonNode root,
-            String defaultService,
-            String defaultTraceId
-    ) {
-        JsonNode result = root.path("data").path("result");
-        if (!result.isArray()) {
-            return List.of();
-        }
-        List<LogQueryResponse.LogRecordDto> records = new ArrayList<>();
-        for (JsonNode streamEntry : result) {
-            Map<String, String> labels = new LinkedHashMap<>();
-            JsonNode streamNode = streamEntry.path("stream");
-            if (streamNode.isObject()) {
-                streamNode.fields().forEachRemaining(entry -> {
-                    if (entry.getValue().isTextual()) {
-                        labels.put(entry.getKey(), entry.getValue().asText());
-                    }
-                });
-            }
-            String streamService = labels.getOrDefault("service_name",
-                    labels.getOrDefault("service", defaultService != null ? defaultService : "unknown"));
-            String streamLevel = labels.getOrDefault("level",
-                    labels.getOrDefault("severity_text", "INFO")).toUpperCase(Locale.ROOT);
-            String streamTraceId = labels.getOrDefault("trace_id", defaultTraceId);
-
-            JsonNode values = streamEntry.path("values");
-            if (values.isArray()) {
-                for (JsonNode tuple : values) {
-                    if (tuple.isArray() && tuple.size() >= 2) {
-                        OffsetDateTime ts = parseEpochNanos(tuple.get(0).asText());
-                        String rawMessage = tuple.get(1).asText("");
-                        String sanitized = sanitizeMessage(rawMessage);
-                        boolean wasRedacted = !sanitized.equals(truncate(rawMessage));
-                        records.add(new LogQueryResponse.LogRecordDto(
-                                ts,
-                                streamService,
-                                streamLevel,
-                                sanitized,
-                                streamTraceId,
-                                null,
-                                "loki",
-                                wasRedacted,
-                                labels
-                        ));
-                    }
-                }
-            }
-        }
-        records.sort(Comparator.comparing(LogQueryResponse.LogRecordDto::timestamp).reversed());
-        return records;
     }
 
     private List<LogQueryResponse.LogRecordDto> collectEvidenceLogs(
@@ -280,9 +191,9 @@ public class LogsQueryService {
                     continue;
                 }
 
-                String sanitized = sanitizeMessage(item.getExcerpt());
+                String sanitized = LokiLogSupport.sanitizeMessage(item.getExcerpt(), sanitizer);
                 boolean redacted = item.getRedactionStatus() == RedactionStatus.REDACTED
-                        || !sanitized.equals(truncate(item.getExcerpt()));
+                        || !sanitized.equals(LokiLogSupport.truncate(item.getExcerpt()));
 
                 Map<String, String> attrs = new LinkedHashMap<>();
                 if (item.getMetadata() != null) {
@@ -295,7 +206,7 @@ public class LogsQueryService {
 
                 String level = switch (item.getType()) {
                     case COLLECTION_ERROR -> "ERROR";
-                    case LOG -> inferLevel(sanitized);
+                    case LOG -> LokiLogSupport.inferLevel(sanitized);
                     default -> "INFO";
                 };
 
@@ -315,38 +226,5 @@ public class LogsQueryService {
             records.sort(Comparator.comparing(LogQueryResponse.LogRecordDto::timestamp).reversed());
             return records;
         });
-    }
-
-    private String sanitizeMessage(String raw) {
-        return sanitizer.sanitizeContent(truncate(raw == null ? "" : raw));
-    }
-
-    private String truncate(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        return raw.length() <= MAX_LOG_MESSAGE_CHARS ? raw : raw.substring(0, MAX_LOG_MESSAGE_CHARS);
-    }
-
-    private String inferLevel(String message) {
-        String upper = message.toUpperCase(Locale.ROOT);
-        if (upper.contains("ERROR") || upper.contains("EXCEPTION") || upper.contains("FATAL") || upper.contains("OOM")) {
-            return "ERROR";
-        }
-        if (upper.contains("WARN")) {
-            return "WARN";
-        }
-        return "INFO";
-    }
-
-    private OffsetDateTime parseEpochNanos(String nanosRaw) {
-        try {
-            long nanos = Long.parseLong(nanosRaw);
-            long secs = nanos / 1_000_000_000L;
-            long remNanos = nanos % 1_000_000_000L;
-            return OffsetDateTime.ofInstant(Instant.ofEpochSecond(secs, remNanos), ZoneOffset.UTC);
-        } catch (NumberFormatException ex) {
-            return OffsetDateTime.now(ZoneOffset.UTC);
-        }
     }
 }

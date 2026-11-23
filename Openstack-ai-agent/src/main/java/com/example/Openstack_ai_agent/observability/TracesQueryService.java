@@ -193,6 +193,21 @@ public class TracesQueryService {
             int perServiceLimit,
             int maxTotalSpans
     ) {
+        return queryLiveSpans(backendClient, analysisCalculator, specificService, range.from(), range.to(), perServiceLimit, maxTotalSpans);
+    }
+
+    public static List<TraceAnalysisCalculator.RawSpan> queryLiveSpans(
+            ObservabilityBackendClient backendClient,
+            TraceAnalysisCalculator analysisCalculator,
+            String specificService,
+            OffsetDateTime from,
+            OffsetDateTime to,
+            int perServiceLimit,
+            int maxTotalSpans
+    ) {
+        if (backendClient == null || !backendClient.isLiveQueryEnabled()) {
+            return List.of();
+        }
         List<String> targetServices = specificService != null
                 ? List.of(specificService)
                 : backendClient.queryJaegerV3Services();
@@ -206,8 +221,8 @@ public class TracesQueryService {
             }
             Optional<JsonNode> liveJson = backendClient.queryJaegerV3Traces(
                     svc,
-                    range.from(),
-                    range.to(),
+                    from,
+                    to,
                     perServiceLimit
             );
             if (liveJson.isEmpty()) {

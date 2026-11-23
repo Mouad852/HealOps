@@ -350,6 +350,63 @@ public class TraceAnalysisCalculator {
         return Math.round(value * 100.0) / 100.0;
     }
 
+    public List<ErrorSpanDetail> extractErrorSpans(List<RawSpan> rawSpans, int maxSpans) {
+        if (rawSpans == null || rawSpans.isEmpty() || maxSpans <= 0) {
+            return List.of();
+        }
+        return rawSpans.stream()
+                .filter(s -> "ERROR".equalsIgnoreCase(s.status()))
+                .sorted(Comparator.comparingDouble(RawSpan::durationMs).reversed())
+                .limit(maxSpans)
+                .map(s -> new ErrorSpanDetail(
+                        s.spanId(),
+                        s.service(),
+                        s.operation(),
+                        roundTwoDecimals(s.durationMs()),
+                        "ERROR",
+                        selectDiagnosticAttributes(s.attributes())
+                ))
+                .toList();
+    }
+
+    public static List<String> formatCriticalPath(List<TraceResponses.TraceSpanSummary> criticalPath) {
+        if (criticalPath == null || criticalPath.isEmpty()) {
+            return List.of();
+        }
+        return criticalPath.stream()
+                .map(span -> span.service() + "/" + span.operation()
+                        + " (" + span.durationMs() + "ms, " + span.status() + ")")
+                .toList();
+    }
+
+    private Map<String, String> selectDiagnosticAttributes(Map<String, String> attrs) {
+        if (attrs == null || attrs.isEmpty()) {
+            return Map.of();
+        }
+        List<String> priorityKeys = List.of(
+                "http.status_code", "http.response.status_code",
+                "db.system", "db.statement",
+                "error.message", "exception.message", "error.type", "error"
+        );
+        Map<String, String> selected = new LinkedHashMap<>();
+        for (String key : priorityKeys) {
+            String val = attrs.get(key);
+            if (val != null && !val.isBlank()) {
+                selected.put(key, val.length() <= 200 ? val : val.substring(0, 200));
+            }
+        }
+        for (Map.Entry<String, String> entry : attrs.entrySet()) {
+            if (selected.size() >= 6) {
+                break;
+            }
+            if (!selected.containsKey(entry.getKey()) && entry.getValue() != null && !entry.getValue().isBlank()) {
+                String val = entry.getValue();
+                selected.put(entry.getKey(), val.length() <= 200 ? val : val.substring(0, 200));
+            }
+        }
+        return Map.copyOf(selected);
+    }
+
     public record RawSpan(
             String traceId,
             String spanId,
@@ -362,6 +419,19 @@ public class TraceAnalysisCalculator {
             Map<String, String> attributes
     ) {
         public RawSpan {
+            attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
+        }
+    }
+
+    public record ErrorSpanDetail(
+            String spanId,
+            String service,
+            String operation,
+            double durationMs,
+            String status,
+            Map<String, String> attributes
+    ) {
+        public ErrorSpanDetail {
             attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
         }
     }

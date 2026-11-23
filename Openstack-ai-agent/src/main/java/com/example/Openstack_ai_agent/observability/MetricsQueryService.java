@@ -3,6 +3,7 @@ package com.example.Openstack_ai_agent.observability;
 import com.example.Openstack_ai_agent.common.api.EnvironmentAuthorizationSupport;
 import com.example.Openstack_ai_agent.diagnosis.HealthSnapshotEntity;
 import com.example.Openstack_ai_agent.diagnosis.HealthSnapshotRepository;
+import com.example.Openstack_ai_agent.evidence.EvidenceAdapterClient;
 import com.example.Openstack_ai_agent.incident.IncidentEntity;
 import com.example.Openstack_ai_agent.incident.IncidentRepository;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -34,6 +35,12 @@ public class MetricsQueryService {
     private final IncidentRepository incidentRepository;
     private final HealthSnapshotRepository healthSnapshotRepository;
     private final TransactionOperations readOnlyTx;
+    private EvidenceAdapterClient evidenceAdapterClient;
+
+    @Autowired(required = false)
+    public void setEvidenceAdapterClient(EvidenceAdapterClient evidenceAdapterClient) {
+        this.evidenceAdapterClient = evidenceAdapterClient;
+    }
 
     public MetricsQueryService(
             ObservabilityQueryValidator validator,
@@ -104,30 +111,42 @@ public class MetricsQueryService {
                     range.to(),
                     effectiveStep
             );
-            if (liveResponse.isPresent()) {
-                List<MetricRangeResponse.MetricSeries> parsed = parsePrometheusMatrix(
-                        liveResponse.get(),
-                        validatedService,
-                        authorizedEnv,
-                        allowedMetric
-                );
-                boolean hasPoints = parsed.stream().anyMatch(series -> !series.points().isEmpty());
-                if (hasPoints) {
-                    boolean seriesDownsampled = downsampled || parsed.stream().anyMatch(s -> s.points().size() >= properties.getMaxDataPoints());
-                    return new MetricRangeResponse(
-                            authorizedEnv,
-                            validatedService,
-                            allowedMetric.metricName(),
-                            allowedMetric.unit(),
+            List<MetricRangeResponse.MetricSeries> parsed = liveResponse
+                    .map(node -> parsePrometheusMatrix(node, validatedService, authorizedEnv, allowedMetric))
+                    .orElse(List.of());
+            boolean hasPoints = parsed.stream().anyMatch(series -> !series.points().isEmpty());
+
+            if (!hasPoints && (allowedMetric == AllowedMetric.CPU_PERCENT || allowedMetric == AllowedMetric.MEMORY_PERCENT)) {
+                String uidFallbackPromQl = buildCgroupUidFallbackPromQl(validatedService, allowedMetric);
+                if (uidFallbackPromQl != null) {
+                    Optional<JsonNode> uidResponse = backendClient.queryPrometheusRange(
+                            uidFallbackPromQl,
                             range.from(),
                             range.to(),
-                            requestedStep,
-                            effectiveStep,
-                            seriesDownsampled,
-                            "PROMETHEUS",
-                            parsed
+                            effectiveStep
                     );
+                    if (uidResponse.isPresent()) {
+                        parsed = parsePrometheusMatrix(uidResponse.get(), validatedService, authorizedEnv, allowedMetric);
+                        hasPoints = parsed.stream().anyMatch(series -> !series.points().isEmpty());
+                    }
                 }
+            }
+
+            if (hasPoints) {
+                boolean seriesDownsampled = downsampled || parsed.stream().anyMatch(s -> s.points().size() >= properties.getMaxDataPoints());
+                return new MetricRangeResponse(
+                        authorizedEnv,
+                        validatedService,
+                        allowedMetric.metricName(),
+                        allowedMetric.unit(),
+                        range.from(),
+                        range.to(),
+                        requestedStep,
+                        effectiveStep,
+                        seriesDownsampled,
+                        "PROMETHEUS",
+                        parsed
+                );
             }
         }
 
@@ -161,6 +180,50 @@ public class MetricsQueryService {
                 "LOCAL_HEALTH_SNAPSHOTS",
                 series
         );
+    }
+
+    private String buildCgroupUidFallbackPromQl(String validatedService, AllowedMetric allowedMetric) {
+        if (evidenceAdapterClient == null) {
+            return null;
+        }
+        String svcLower = validatedService.toLowerCase( java.util.Locale.ROOT);
+        List<String> idTokens = new ArrayList<>();
+        try {
+            JsonNode pods = evidenceAdapterClient.kubernetesPods("pitstop");
+            if (pods != null && pods.isArray()) {
+                for (JsonNode p : pods) {
+                    String name = p.path("name").asText("").toLowerCase(java.util.Locale.ROOT);
+                    String app = p.path("labels").path("app").asText("").toLowerCase(java.util.Locale.ROOT);
+                    String uid = p.path("uid").asText("");
+                    if (!uid.isBlank() && (name.equals(svcLower) || name.startsWith(svcLower + "-") || app.equals(svcLower))) {
+                        idTokens.add(uid.replace("-", "_"));
+                    }
+                }
+            }
+        } catch (RuntimeException ignored) {
+        }
+        try {
+            JsonNode containers = evidenceAdapterClient.dockerContainers();
+            if (containers != null && containers.isArray()) {
+                for (JsonNode c : containers) {
+                    String name = c.path("name").asText("").toLowerCase(java.util.Locale.ROOT);
+                    String cid = c.path("id").asText("");
+                    if (!cid.isBlank() && (name.equals(svcLower) || name.contains(svcLower))) {
+                        idTokens.add(cid.length() >= 12 ? cid.substring(0, 12) : cid);
+                    }
+                }
+            }
+        } catch (RuntimeException ignored) {
+        }
+        if (idTokens.isEmpty()) {
+            return null;
+        }
+        String regex = ".*(" + String.join("|", idTokens) + ").*";
+        return switch (allowedMetric) {
+            case CPU_PERCENT -> "100 * sum(rate(container_cpu_usage_seconds_total{id=~\"" + regex + "\"}[2m]))";
+            case MEMORY_PERCENT -> "100 * max(container_memory_working_set_bytes{id=~\"" + regex + "\"}) / (1024 * 1024 * 1024)";
+            default -> null;
+        };
     }
 
     private List<MetricRangeResponse.MetricSeries> parsePrometheusMatrix(
