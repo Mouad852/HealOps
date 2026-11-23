@@ -198,3 +198,102 @@ def test_pod_exec_closes_stream_and_k8s_manager_applies_timeouts_and_closes_api_
 
     mgr.apply_yaml("payments", "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: demo\n")
     fake_api_client.close.assert_called_once()
+
+
+def test_list_pods_and_events_and_deployment_previous_revision(client, monkeypatch):
+    test_client, fake_manager = client
+    fake_manager.list_events.return_value = [
+        {
+            "type": "Warning",
+            "reason": "Failed",
+            "message": "Failed to pull image pitstop-customer:broken-v999",
+            "count": 2,
+            "involvedObject": {"kind": "Pod", "name": "customer-abc"},
+        }
+    ]
+    ev_res = test_client.get("/k8s/events", params={"namespace": "pitstop"})
+    assert ev_res.status_code == 200
+    assert ev_res.json()[0]["reason"] == "Failed"
+    fake_manager.list_events.assert_called_once_with("pitstop", limit=30)
+    assert test_client.get("/k8s/events", params={"namespace": "BAD_NS!"}).status_code == 400
+
+    # Exercise KubernetesManager.list_pods rich status extraction and deployment previous_revision
+    fake_client_mod = MagicMock()
+    fake_core = MagicMock()
+    fake_apps = MagicMock()
+    fake_client_mod.CoreV1Api.return_value = fake_core
+    fake_client_mod.AppsV1Api.return_value = fake_apps
+
+    pod_img = SimpleNamespace(
+        metadata=SimpleNamespace(name="customer-new-1", namespace="pitstop", deletion_timestamp=None, labels={"app": "customer"}),
+        spec=SimpleNamespace(node_name="desktop-control-plane", containers=[SimpleNamespace(name="customer")]),
+        status=SimpleNamespace(
+            phase="Pending",
+            container_statuses=[
+                SimpleNamespace(
+                    ready=False,
+                    restart_count=0,
+                    state=SimpleNamespace(waiting=SimpleNamespace(reason="ImagePullBackOff"), terminated=None),
+                    last_state=SimpleNamespace(terminated=None),
+                )
+            ],
+        ),
+    )
+    pod_oom = SimpleNamespace(
+        metadata=SimpleNamespace(name="customer-old-1", namespace="pitstop", deletion_timestamp="2026-11-22T21:00:00Z", labels={"app": "customer"}),
+        spec=SimpleNamespace(node_name="desktop-control-plane", containers=[SimpleNamespace(name="customer")]),
+        status=SimpleNamespace(
+            phase="Running",
+            container_statuses=[
+                SimpleNamespace(
+                    ready=True,
+                    restart_count=4,
+                    state=SimpleNamespace(waiting=None, terminated=None),
+                    last_state=SimpleNamespace(terminated=SimpleNamespace(reason="OOMKilled")),
+                )
+            ],
+        ),
+    )
+    fake_core.list_namespaced_pod.return_value = SimpleNamespace(items=[pod_img, pod_oom])
+
+    fake_dep = SimpleNamespace(
+        metadata=SimpleNamespace(uid="dep-cust-1", annotations={"deployment.kubernetes.io/revision": "2"}),
+        spec=SimpleNamespace(replicas=1),
+        status=SimpleNamespace(ready_replicas=0, available_replicas=0, updated_replicas=1),
+    )
+    fake_apps.read_namespaced_deployment.return_value = fake_dep
+    rs1 = SimpleNamespace(
+        metadata=SimpleNamespace(
+            annotations={"deployment.kubernetes.io/revision": "1"},
+            owner_references=[SimpleNamespace(uid="dep-cust-1", kind="Deployment", name="customer")],
+        ),
+        spec=SimpleNamespace(template={"metadata": {"labels": {"app": "customer"}}}),
+    )
+    rs2 = SimpleNamespace(
+        metadata=SimpleNamespace(
+            annotations={"deployment.kubernetes.io/revision": "2"},
+            owner_references=[SimpleNamespace(uid="dep-cust-1", kind="Deployment", name="customer")],
+        ),
+        spec=SimpleNamespace(template={"metadata": {"labels": {"app": "customer"}}}),
+    )
+    fake_apps.list_namespaced_replica_set.return_value = SimpleNamespace(items=[rs1, rs2])
+
+    monkeypatch.setattr(k8s_manager_mod, "client", fake_client_mod)
+    monkeypatch.setattr(k8s_manager_mod, "config", MagicMock())
+
+    mgr = k8s_manager_mod.KubernetesManager()
+    pods = mgr.list_pods("pitstop")
+    assert len(pods) == 2
+    assert pods[0]["ready"] == "0/1"
+    assert pods[0]["reason"] == "ImagePullBackOff"
+    assert pods[0]["terminating"] is False
+    assert pods[0]["labels"] == {"app": "customer"}
+    assert pods[1]["restarts"] == 4
+    assert pods[1]["reason"] == "OOMKilled"
+    assert pods[1]["terminating"] is True
+
+    dep_status = mgr.get_deployment_status("pitstop", "customer")
+    assert dep_status["revision"] == 2
+    assert dep_status["updatedReplicas"] == 1
+    assert dep_status["previous_revision"] == 1
+    assert dep_status["rollback_available"] is True

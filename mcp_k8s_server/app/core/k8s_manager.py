@@ -79,14 +79,98 @@ class KubernetesManager:
 
         result = []
         for p in pods.items:
-            result.append({
+            spec_containers = getattr(p.spec, "containers", None) or []
+            container_statuses = getattr(p.status, "container_statuses", None) or []
+            total_containers = len(spec_containers)
+            ready_containers = sum(1 for cs in container_statuses if getattr(cs, "ready", False))
+            restarts = sum((getattr(cs, "restart_count", 0) or 0) for cs in container_statuses)
+
+            reasons = []
+            for cs in container_statuses:
+                state = getattr(cs, "state", None)
+                waiting = getattr(state, "waiting", None) if state else None
+                terminated = getattr(state, "terminated", None) if state else None
+                last_state = getattr(cs, "last_state", None)
+                last_terminated = getattr(last_state, "terminated", None) if last_state else None
+                for reason in (
+                    getattr(waiting, "reason", None) if waiting else None,
+                    getattr(terminated, "reason", None) if terminated else None,
+                    getattr(last_terminated, "reason", None) if (last_terminated and restarts > 0) else None,
+                ):
+                    if reason and reason not in reasons:
+                        reasons.append(reason)
+
+            terminating = getattr(p.metadata, "deletion_timestamp", None) is not None
+            labels = dict(getattr(p.metadata, "labels", None) or {})
+            pod_uid = getattr(p.metadata, "uid", None)
+            entry = {
                 "name": p.metadata.name,
                 "namespace": p.metadata.namespace,
                 "phase": p.status.phase,
+                "ready": f"{ready_containers}/{total_containers}" if total_containers > 0 else "0/0",
+                "restarts": restarts,
+                "terminating": terminating,
+                "labels": labels,
                 "node": p.spec.node_name,
-                "containers": [c.name for c in p.spec.containers],
-            })
+                "containers": [c.name for c in spec_containers],
+            }
+            if pod_uid:
+                entry["uid"] = pod_uid
+            if reasons:
+                entry["reason"] = reasons[0]
+                entry["reasons"] = reasons
+            result.append(entry)
+
+        self._enrich_pods_with_prometheus_metrics(result)
         return result
+
+    def _enrich_pods_with_prometheus_metrics(self, pods: list[dict[str, Any]]) -> None:
+        if not pods or "PYTEST_CURRENT_TEST" in os.environ:
+            return
+        if not any(p.get("uid") for p in pods):
+            return
+        try:
+            cpu_resp = requests.get(
+                PROMETHEUS_QUERY_URL,
+                params={"query": "rate(container_cpu_usage_seconds_total[2m]) * 100"},
+                timeout=1.5,
+            )
+            mem_resp = requests.get(
+                PROMETHEUS_QUERY_URL,
+                params={"query": "container_memory_working_set_bytes / (1024 * 1024)"},
+                timeout=1.5,
+            )
+            cpu_results = cpu_resp.json().get("data", {}).get("result", []) if cpu_resp.ok else []
+            mem_results = mem_resp.json().get("data", {}).get("result", []) if mem_resp.ok else []
+
+            for pod in pods:
+                raw_uid = pod.get("uid")
+                if not raw_uid:
+                    continue
+                uid_token = str(raw_uid).replace("-", "_")
+                pod_name = pod.get("name", "")
+
+                cpu_candidates = [
+                    float(item["value"][1])
+                    for item in cpu_results
+                    if uid_token in item.get("metric", {}).get("id", "")
+                    or item.get("metric", {}).get("pod") == pod_name
+                ]
+                mem_candidates = [
+                    float(item["value"][1])
+                    for item in mem_results
+                    if uid_token in item.get("metric", {}).get("id", "")
+                    or item.get("metric", {}).get("pod") == pod_name
+                ]
+                if cpu_candidates:
+                    pod["cpu_percent"] = round(max(cpu_candidates), 2)
+                if mem_candidates:
+                    mem_mb = round(max(mem_candidates), 2)
+                    pod["memory_mb"] = mem_mb
+                    pod["memory_percent"] = round(min(100.0, (mem_mb / 1024.0) * 100.0), 2)
+        except Exception:
+            # Best-effort metric enrichment; never fail pod listing if Prometheus is unreachable
+            pass
 
     def get_pod_logs(self, namespace: str, pod_name: str, container: str = None, tail_lines: int = 200):
         try:
@@ -151,6 +235,28 @@ class KubernetesManager:
     def get_deployment(self, namespace: str, name: str):
         return self.apps.read_namespaced_deployment(name, namespace, _request_timeout=self.timeout)
 
+    def _list_owned_revisions(self, namespace: str, deployment_name: str, dep_uid: Optional[str]) -> list[tuple[int, Any]]:
+        replica_sets = self.apps.list_namespaced_replica_set(
+            namespace=namespace,
+            _request_timeout=self.timeout,
+        )
+        owned_revisions: list[tuple[int, Any]] = []
+        for rs in getattr(replica_sets, "items", []) or []:
+            owners = getattr(rs.metadata, "owner_references", None) or []
+            owned = any(
+                (dep_uid and getattr(owner, "uid", None) == dep_uid)
+                or (getattr(owner, "kind", None) == "Deployment" and getattr(owner, "name", None) == deployment_name)
+                for owner in owners
+            )
+            if not owned:
+                continue
+            rs_annotations = getattr(rs.metadata, "annotations", None) or {}
+            raw_rs_rev = rs_annotations.get("deployment.kubernetes.io/revision")
+            if isinstance(raw_rs_rev, str) and raw_rs_rev.isdigit():
+                owned_revisions.append((int(raw_rs_rev), rs))
+        owned_revisions.sort(key=lambda pair: pair[0], reverse=True)
+        return owned_revisions
+
     def get_deployment_status(self, namespace: str, name: str) -> Dict[str, Any]:
         dep = self.get_deployment(namespace, name)
         annotations = (getattr(dep.metadata, "annotations", None) or {})
@@ -158,14 +264,66 @@ class KubernetesManager:
         revision = int(raw_rev) if isinstance(raw_rev, str) and raw_rev.isdigit() else None
         spec_replicas = getattr(dep.spec, "replicas", None)
         status_obj = getattr(dep, "status", None)
-        return {
+
+        previous_revision: Optional[int] = None
+        try:
+            dep_uid = getattr(dep.metadata, "uid", None)
+            owned_revisions = self._list_owned_revisions(namespace, name, dep_uid)
+            for rev, _rs in owned_revisions:
+                if revision is None:
+                    if len(owned_revisions) >= 2:
+                        previous_revision = owned_revisions[1][0]
+                    break
+                if rev < revision:
+                    previous_revision = rev
+                    break
+        except Exception:
+            previous_revision = None
+
+        result = {
             "namespace": namespace,
             "deployment": name,
             "replicas": spec_replicas if spec_replicas is not None else 0,
             "revision": revision,
             "readyReplicas": getattr(status_obj, "ready_replicas", 0) or 0,
             "availableReplicas": getattr(status_obj, "available_replicas", 0) or 0,
+            "updatedReplicas": getattr(status_obj, "updated_replicas", 0) or 0,
+            "rollback_available": previous_revision is not None,
         }
+        if previous_revision is not None:
+            result["previous_revision"] = previous_revision
+        return result
+
+    def list_events(self, namespace: str, limit: int = 30):
+        events = self.core.list_namespaced_event(namespace, _request_timeout=self.timeout)
+        items = getattr(events, "items", []) or []
+
+        def _sort_key(e):
+            event_type = (getattr(e, "type", None) or "").lower()
+            is_warning = 0 if event_type == "warning" else 1
+            ts = (
+                getattr(e, "last_timestamp", None)
+                or getattr(e, "event_time", None)
+                or getattr(getattr(e, "metadata", None), "creation_timestamp", None)
+            )
+            epoch = ts.timestamp() if ts is not None and hasattr(ts, "timestamp") else 0.0
+            return (is_warning, -epoch)
+
+        ordered = sorted(items, key=_sort_key)[:limit]
+        result = []
+        for e in ordered:
+            involved = getattr(e, "involved_object", None)
+            result.append({
+                "type": getattr(e, "type", None),
+                "reason": getattr(e, "reason", None),
+                "message": getattr(e, "message", None),
+                "count": getattr(e, "count", None),
+                "involvedObject": {
+                    "kind": getattr(involved, "kind", None) if involved else None,
+                    "name": getattr(involved, "name", None) if involved else None,
+                },
+            })
+        return result
 
     def restart_workload(self, namespace: str, kind: str, workload: str) -> Dict[str, Any]:
         restarted_at = datetime.now(timezone.utc).isoformat()
@@ -218,30 +376,11 @@ class KubernetesManager:
         raw_current_rev = dep_annotations.get("deployment.kubernetes.io/revision")
         current_rev = int(raw_current_rev) if isinstance(raw_current_rev, str) and raw_current_rev.isdigit() else None
 
-        replica_sets = self.apps.list_namespaced_replica_set(
-            namespace=namespace,
-            _request_timeout=self.timeout,
-        )
         dep_uid = getattr(dep.metadata, "uid", None)
-        owned_revisions: list[tuple[int, Any]] = []
-        for rs in getattr(replica_sets, "items", []) or []:
-            owners = getattr(rs.metadata, "owner_references", None) or []
-            owned = any(
-                (dep_uid and getattr(owner, "uid", None) == dep_uid)
-                or (getattr(owner, "kind", None) == "Deployment" and getattr(owner, "name", None) == deployment_name)
-                for owner in owners
-            )
-            if not owned:
-                continue
-            rs_annotations = getattr(rs.metadata, "annotations", None) or {}
-            raw_rs_rev = rs_annotations.get("deployment.kubernetes.io/revision")
-            if isinstance(raw_rs_rev, str) and raw_rs_rev.isdigit():
-                owned_revisions.append((int(raw_rs_rev), rs))
+        owned_revisions = self._list_owned_revisions(namespace, deployment_name, dep_uid)
 
         if not owned_revisions:
             raise ValueError(f"No revision history found for deployment {namespace}/{deployment_name}")
-
-        owned_revisions.sort(key=lambda pair: pair[0], reverse=True)
 
         target_pair = None
         if revision is not None:

@@ -75,6 +75,18 @@ def list_pods(namespace: Optional[str] = None):
         raise _map_k8s_error(e)
 
 
+@router.get("/events")
+def list_events(
+    namespace: str = Query(..., description="Kubernetes namespace to inspect events in"),
+    limit: int = Query(default=30, ge=1, le=100),
+):
+    _validate_namespace(namespace)
+    try:
+        return get_k8s_manager().list_events(namespace, limit=limit)
+    except Exception as e:
+        raise _map_k8s_error(e)
+
+
 @router.get("/pods/{namespace}/{pod}/logs")
 def pod_logs(
     namespace: str,
