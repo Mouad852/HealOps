@@ -103,7 +103,7 @@ public class IncidentEntity {
         return incident;
     }
 
-    void transitionTo(IncidentStatus nextStatus) {
+    public void transitionTo(IncidentStatus nextStatus) {
         this.status = nextStatus;
     }
 

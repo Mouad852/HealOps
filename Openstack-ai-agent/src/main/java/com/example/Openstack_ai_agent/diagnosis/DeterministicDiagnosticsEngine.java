@@ -56,6 +56,15 @@ public class DeterministicDiagnosticsEngine {
     private static final Pattern PREVIOUS_REVISION_PATTERN = Pattern.compile(
             "(?i)(?:previous_revision|rollback_revision)\"?\\s*[:=]\\s*\"?(\\d+)"
     );
+    private static final Pattern ERROR_SPAN_COUNT_PATTERN = Pattern.compile(
+            "(?i)\"?error[_\\s]?span[_\\s]?count\"?\\s*[:=]\\s*\"?([1-9]\\d*)"
+    );
+    private static final Pattern NON_EMPTY_ERROR_SPANS_PATTERN = Pattern.compile(
+            "(?i)\"errorSpans\"\\s*:\\s*\\[\\s*\\{"
+    );
+    private static final Pattern TRACE_DURATION_MS_PATTERN = Pattern.compile(
+            "(?i)\"?totalDurationMs\"?\\s*[:=]\\s*\"?(\\d+(?:\\.\\d+)?)"
+    );
 
     public DeterministicDiagnosticsResult diagnose(
             IncidentResponse incident,
@@ -179,16 +188,24 @@ public class DeterministicDiagnosticsEngine {
                     highErrorRateIds.add(item.id());
                 }
             } else if (containsAny(lower,
-                    "elevated error rate", "high error rate", "http 500", "5xx spike", "status=500",
-                    "\"status\":500", "\"status_code\":500", "\"http.status_code\":500",
+                    "elevated error rate", "high error rate", "http 500", "http 502", "http 503", "http 504",
+                    "5xx spike", "status=500", "\"status\":500", "\"status_code\":500",
+                    "\"http.status_code\":500", "\"http.status_code\":\"500\"",
                     "500 internal server error", "synthetic demo failure", "synthetic demo workload request failed")
                     || (item.type() != EvidenceType.ALERT_CONTEXT && containsAny(lower,
                     "\"level\":\"error\"", "\"level\": \"error\"", "level=error", "[error]",
-                    "\"severity\":\"error\"", "\"severity\": \"error\""))) {
+                    "\"severity\":\"error\"", "\"severity\": \"error\""))
+                    || (item.type() == EvidenceType.TRACE && hasTraceErrors(combined, lower))) {
                 highErrorRateIds.add(item.id());
             }
 
             Double latencyMs = extractLatencyMs(combined);
+            if (item.type() == EvidenceType.TRACE) {
+                Double traceDurationMs = extractDouble(TRACE_DURATION_MS_PATTERN, combined);
+                if (traceDurationMs != null) {
+                    latencyMs = latencyMs == null ? traceDurationMs : Math.max(latencyMs, traceDurationMs);
+                }
+            }
             if (latencyMs != null) {
                 maxLatencyMs = maxLatencyMs == null ? latencyMs : Math.max(maxLatencyMs, latencyMs);
                 if (latencyMs >= 1000.0) {
@@ -523,7 +540,7 @@ public class DeterministicDiagnosticsEngine {
                 args.put("replicas", desired);
                 return new LlmDiagnosisDraft.ActionRecommendationDraft(ActionType.SCALE_K8S_DEPLOYMENT.name(), args);
             }
-            if (hasCriticalWorkloadFailure && targetDeployment != null) {
+            if (hasServiceDisruption && targetDeployment != null) {
                 Map<String, Object> args = new LinkedHashMap<>();
                 args.put("namespace", namespace);
                 args.put("workload", targetDeployment);
@@ -623,6 +640,25 @@ public class DeterministicDiagnosticsEngine {
         return "Deterministic analysis for service '" + incident.service()
                 + "' identified [" + codes + "] with telemetry=" + telemetryStatus
                 + "; recommended " + action.actionType() + ".";
+    }
+
+    private static boolean hasTraceErrors(String combined, String lower) {
+        return ERROR_SPAN_COUNT_PATTERN.matcher(combined).find()
+                || NON_EMPTY_ERROR_SPANS_PATTERN.matcher(combined).find()
+                || containsAny(lower, "\"status\":\"error\"", "\"status\": \"error\"", "status=error", "status_code_error");
+    }
+
+    private static Double extractDouble(Pattern pattern, String text) {
+        Matcher matcher = pattern.matcher(text);
+        Double best = null;
+        while (matcher.find()) {
+            try {
+                double val = Double.parseDouble(matcher.group(1));
+                best = best == null ? val : Math.max(best, val);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return best;
     }
 
     private static boolean containsAny(String haystack, String... needles) {

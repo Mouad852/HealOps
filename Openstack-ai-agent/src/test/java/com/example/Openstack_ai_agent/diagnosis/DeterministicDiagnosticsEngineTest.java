@@ -298,6 +298,94 @@ class DeterministicDiagnosticsEngineTest {
         assertThat(noHcResult.healthSignals().healthStatus()).isEqualTo("HEALTHY");
     }
 
+    @Test
+    void detectsFailingJaegerTraceAndLokiLogsAndRecommendsRemediationWithoutAlertAnnotations() {
+        OffsetDateTime now = OffsetDateTime.parse("2026-01-01T10:00:00Z");
+
+        // 1. Docker incident with minimal annotations: Jaeger trace + Loki logs trigger HIGH_ERROR_RATE + HIGH_LATENCY + RESTART_CONTAINER
+        IncidentResponse dockerIncident = incident(
+                "demo-workload",
+                Map.of("runtime", "docker", "container", "healops-demo-workload"),
+                Map.of()
+        );
+        EvidenceItemResponse lokiLog = evidence(
+                UUID.randomUUID(),
+                EvidenceType.LOG,
+                "loki",
+                "{\"adapter\":\"loki\",\"service\":\"demo-workload\",\"logCount\":1,\"errorCount\":1,\"lines\":[{\"level\":\"ERROR\",\"message\":\"HTTP 500 downstream failure\"}]}",
+                now,
+                Map.of("adapter", "loki")
+        );
+        EvidenceItemResponse jaegerTrace = evidence(
+                UUID.randomUUID(),
+                EvidenceType.TRACE,
+                "jaeger",
+                "{\"traceId\":\"4bf92f3577b34da6a3ce929d0e0e4736\",\"rootService\":\"demo-workload\",\"totalDurationMs\":1350.5,\"spanCount\":2,\"errorSpanCount\":2,\"errorSpans\":[{\"service\":\"demo-inventory-db\",\"operation\":\"SELECT inventory_items\",\"status\":\"ERROR\"}]}",
+                now,
+                Map.of("adapter", "jaeger")
+        );
+
+        var dockerResult = engine.diagnose(
+                dockerIncident,
+                List.of(lokiLog, jaegerTrace),
+                correlationService.correlate(dockerIncident, List.of(lokiLog, jaegerTrace))
+        );
+        assertThat(dockerResult.findings())
+                .extracting(DeterministicDiagnosticsEngine.DeterministicFinding::code)
+                .contains("HIGH_ERROR_RATE", "HIGH_LATENCY");
+        assertThat(dockerResult.healthSignals().latencyMs()).isEqualTo(1350.5);
+        assertThat(dockerResult.recommendedAction().actionType()).isEqualTo(ActionType.RESTART_CONTAINER.name());
+        assertThat(dockerResult.recommendedAction().arguments()).containsEntry("container", "healops-demo-workload");
+
+        // 2. K8s workload with slow failing Jaeger trace -> SCALE_K8S_DEPLOYMENT
+        IncidentResponse k8sLatencyIncident = incident(
+                "checkout-api",
+                Map.of("namespace", "payments", "deployment", "checkout-api", "replicas", "2"),
+                Map.of()
+        );
+        var k8sScaleResult = engine.diagnose(
+                k8sLatencyIncident,
+                List.of(jaegerTrace),
+                correlationService.correlate(k8sLatencyIncident, List.of(jaegerTrace))
+        );
+        assertThat(k8sScaleResult.recommendedAction().actionType()).isEqualTo(ActionType.SCALE_K8S_DEPLOYMENT.name());
+        assertThat(k8sScaleResult.recommendedAction().arguments()).containsEntry("replicas", 3);
+
+        // 3. K8s workload with failing Jaeger trace (fast error, < 1000ms) -> RESTART_K8S_WORKLOAD
+        EvidenceItemResponse fastErrorTrace = evidence(
+                UUID.randomUUID(),
+                EvidenceType.TRACE,
+                "jaeger",
+                "{\"traceId\":\"4bf92f3577b34da6a3ce929d0e0e4736\",\"totalDurationMs\":80.0,\"spanCount\":2,\"errorSpanCount\":1,\"errorSpans\":[{\"service\":\"payments-db\",\"status\":\"ERROR\"}]}",
+                now,
+                Map.of("adapter", "jaeger")
+        );
+        var k8sRestartResult = engine.diagnose(
+                k8sLatencyIncident,
+                List.of(fastErrorTrace),
+                correlationService.correlate(k8sLatencyIncident, List.of(fastErrorTrace))
+        );
+        assertThat(k8sRestartResult.recommendedAction().actionType()).isEqualTo(ActionType.RESTART_K8S_WORKLOAD.name());
+
+        // 4. Clean Jaeger trace (errorSpanCount: 0, errorSpans: []) must NOT trigger HIGH_ERROR_RATE
+        EvidenceItemResponse cleanTrace = evidence(
+                UUID.randomUUID(),
+                EvidenceType.TRACE,
+                "jaeger",
+                "{\"traceId\":\"4bf92f3577b34da6a3ce929d0e0e4736\",\"totalDurationMs\":45.0,\"spanCount\":2,\"errorSpanCount\":0,\"errorSpans\":[]}",
+                now,
+                Map.of("adapter", "jaeger")
+        );
+        var cleanTraceResult = engine.diagnose(
+                dockerIncident,
+                List.of(cleanTrace),
+                correlationService.correlate(dockerIncident, List.of(cleanTrace))
+        );
+        assertThat(cleanTraceResult.findings())
+                .extracting(DeterministicDiagnosticsEngine.DeterministicFinding::code)
+                .doesNotContain("HIGH_ERROR_RATE", "HIGH_LATENCY");
+    }
+
     private IncidentResponse incident(String service, Map<String, String> labels, Map<String, String> annotations) {
         OffsetDateTime now = OffsetDateTime.parse("2026-01-01T10:00:00Z");
         return new IncidentResponse(

@@ -19,30 +19,35 @@ import java.util.regex.Pattern;
  */
 @Service
 public class LlmDiagnosisService {
-    public static final String PROMPT_VERSION = "diagnosis-prompt-v1";
+    public static final String PROMPT_VERSION = "diagnosis-prompt-v2";
     private static final int MAX_EVIDENCE_ITEMS_IN_PROMPT = 20;
-    private static final int MAX_EXCERPT_CHARS_IN_PROMPT = 400;
+    private static final int MAX_EXCERPT_CHARS_IN_PROMPT = 1200;
+    private static final int MAX_TOTAL_PROMPT_CHARS = 14000;
     private static final Pattern SENSITIVE_VALUE = Pattern.compile(
-            "(?i)(api[_-]?key|authorization|bearer|password|secret|token)(\\s*[:=]\\s*|\\s+)([^\\s,;]+)"
+            "(?i)(api[_-]?key|authorization|bearer|password|passwd|secret|client[_-]?secret|access[_-]?token|refresh[_-]?token|token)(\\s*[:=]\\s*|\\s+)([^\\s,;\"']+)"
     );
 
     private static final String SYSTEM_PROMPT = """
             You are HealOps Incident Autopilot's diagnosis assistant.
-            Analyze the bounded, redacted incident evidence and deterministic findings below.
+            Correlate all available bounded, redacted incident evidence and deterministic findings:
+            - Loki application logs (type=LOG, source=loki) for error messages, HTTP 5xx, exceptions, and trace correlations.
+            - Jaeger v3 distributed trace summaries (type=TRACE, source=jaeger) for critical path, slowest spans, and failing downstream dependency spans (e.g., serviceA -> serviceB).
+            - Infrastructure metrics and runtime events (docker, kubernetes, openstack, prometheus).
             Strict rules:
-            1. Every hypothesis MUST cite one or more exact evidence UUIDs from the provided evidence list. Never invent UUIDs.
-            2. Never treat missing telemetry or COLLECTION_ERROR evidence as healthy.
-            3. Recommend ONLY one allowlisted actionType from:
+            1. Every hypothesis MUST cite one or more exact evidence UUIDs from the provided evidence list (including loki and jaeger UUIDs when present). Never invent UUIDs.
+            2. In your summary and hypotheses, pinpoint the exact failing service, operation, downstream dependency, error log, or latency bottleneck observed in the logs/traces.
+            3. Never treat missing telemetry or COLLECTION_ERROR evidence as healthy.
+            4. Recommend ONLY one allowlisted actionType from:
                NO_ACTION, RESTART_CONTAINER, RESTART_K8S_WORKLOAD, SCALE_K8S_DEPLOYMENT, ROLLBACK_K8S_DEPLOYMENT, RESTART_OPENSTACK_SERVICE.
-            4. Supply ONLY typed arguments matching the chosen actionType:
+            5. Supply ONLY typed arguments matching the chosen actionType:
                - NO_ACTION: {reason}
                - RESTART_CONTAINER: {container}
                - RESTART_K8S_WORKLOAD: {namespace, workload, kind}
                - SCALE_K8S_DEPLOYMENT: {namespace, deployment, replicas (1..10)}
                - ROLLBACK_K8S_DEPLOYMENT: {namespace, deployment, revision (optional int)}
                - RESTART_OPENSTACK_SERVICE: {node, service}
-            5. NEVER emit shell commands, scripts, YAML manifests, or workflow state transitions.
-            6. Confidence values must be decimal numbers between 0.00 and 1.00.
+            6. NEVER emit shell commands, scripts, YAML manifests, or workflow state transitions.
+            7. Confidence values must be decimal numbers between 0.00 and 1.00.
             """;
 
     private final ChatClient chatClient;
@@ -62,7 +67,7 @@ public class LlmDiagnosisService {
     public LlmDiagnosisService(
             ChatClient chatClient,
             @Value("${healops.diagnosis.llm-enabled:false}") boolean llmEnabled,
-            @Value("${spring.ai.openai.chat.options.model:gemini-2.5-flash-lite}") String modelName,
+            @Value("${spring.ai.openai.chat.options.model:gemini-3.5-flash-lite}") String modelName,
             @Value("${spring.ai.openai.api-key:}") String apiKey
     ) {
         this.chatClient = chatClient;
@@ -133,13 +138,28 @@ public class LlmDiagnosisService {
                 .append(" args=").append(deterministic.recommendedAction().arguments()).append('\n');
 
         sb.append("\nBounded Redacted Evidence (cite ONLY these exact UUIDs):\n");
-        evidence.stream().limit(MAX_EVIDENCE_ITEMS_IN_PROMPT).forEach(item -> sb
-                .append("- id=").append(item.id())
-                .append(" type=").append(item.type())
-                .append(" source=").append(sanitize(item.source(), 100))
-                .append(" target=").append(sanitize(item.target(), 150))
-                .append(" observedAt=").append(item.observedAt())
-                .append(" excerpt=\"").append(sanitize(item.excerpt(), MAX_EXCERPT_CHARS_IN_PROMPT)).append("\"\n"));
+        int count = 0;
+        for (EvidenceItemResponse item : evidence) {
+            if (count >= MAX_EVIDENCE_ITEMS_IN_PROMPT) {
+                break;
+            }
+            String line = "- id=" + item.id()
+                    + " type=" + item.type()
+                    + " source=" + sanitize(item.source(), 100)
+                    + " target=" + sanitize(item.target(), 150)
+                    + " observedAt=" + item.observedAt()
+                    + " excerpt=\"" + sanitize(item.excerpt(), MAX_EXCERPT_CHARS_IN_PROMPT) + "\"\n";
+            if (sb.length() + line.length() > MAX_TOTAL_PROMPT_CHARS) {
+                int remaining = MAX_TOTAL_PROMPT_CHARS - sb.length();
+                if (remaining > 180) {
+                    sb.append(line, 0, remaining - 3).append("\"\n");
+                }
+                sb.append("... (remaining evidence omitted due to prompt size bound)\n");
+                break;
+            }
+            sb.append(line);
+            count++;
+        }
 
         return sb.toString();
     }

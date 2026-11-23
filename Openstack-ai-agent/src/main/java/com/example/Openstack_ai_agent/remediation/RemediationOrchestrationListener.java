@@ -32,7 +32,7 @@ import java.util.Set;
 @Component
 public class RemediationOrchestrationListener {
     private static final Logger log = LoggerFactory.getLogger(RemediationOrchestrationListener.class);
-    private static final int MAX_STARTING_HEALTH_RETRIES = 3;
+    private static final int MAX_STARTING_HEALTH_RETRIES = 15;
     private static final Duration STARTING_HEALTH_RETRY_DELAY = Duration.ofSeconds(2);
 
     private final IncidentService incidentService;
