@@ -1,24 +1,33 @@
 <section class="d-flex flex-column gap-4" aria-label="Operational dashboard overview">
-  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
-      <h1 class="h3 mb-1 text-white">Operational Command Center</h1>
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+        <h1 class="h3 mb-0 text-white fw-bold">Operational Command Center</h1>
+        <span class="badge text-bg-info font-monospace">env: {{ envStore.selectedEnvironmentId() }}</span>
+      </div>
       <p class="text-secondary small mb-0">
-        Environment: <strong class="text-info">{{ envStore.selectedEnvironmentId() }}</strong>
+        Autonomous incident detection, evidence correlation, and policy-gated remediation
         @if (dashboardStore.overview(); as overview) {
-          <span class="ms-2">
-            &bull; Updated <time [attr.datetime]="overview.generatedAt">{{ overview.generatedAt | date: 'mediumTime' }}</time>
+          <span class="ms-1">
+            &bull; Last synced <time [attr.datetime]="overview.generatedAt">{{ overview.generatedAt | date: 'mediumTime' }}</time>
           </span>
         }
       </p>
     </div>
-    <button
-      type="button"
-      class="btn btn-sm btn-outline-info"
-      [disabled]="dashboardStore.loading()"
-      (click)="refresh()"
-    >
-      <i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Refresh Overview
-    </button>
+
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <a class="btn btn-sm btn-info fw-semibold" routerLink="/incidents">
+        <i class="bi bi-exclamation-octagon me-1" aria-hidden="true"></i>Open Incidents
+      </a>
+      <button
+        type="button"
+        class="btn btn-sm btn-outline-info"
+        [disabled]="dashboardStore.loading()"
+        (click)="refresh()"
+      >
+        <i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Refresh Overview
+      </button>
+    </div>
   </div>
 
   @if (dashboardStore.error(); as errorMsg) {
@@ -37,33 +46,40 @@
     @if (dashboardStore.overview(); as overview) {
     <div class="row g-3">
       <div class="col-sm-6 col-xl-3">
-        <div class="card healops-surface h-100">
-          <div class="card-body">
-            <div class="text-secondary small text-uppercase">Active Incidents</div>
+        <div class="card healops-surface healops-kpi h-100">
+          <div class="card-body d-flex flex-column">
+            <div class="d-flex justify-content-between align-items-center">
+              <span class="text-secondary small text-uppercase fw-semibold">Active Incidents</span>
+              <i class="bi bi-exclamation-octagon text-info fs-5" aria-hidden="true"></i>
+            </div>
             <div class="display-6 fw-bold text-white mt-1">{{ overview.incidents.activeCount }}</div>
             <div class="small text-secondary mt-2">
-              Total recorded: <strong class="text-light">{{ overview.incidents.totalCount }}</strong>
+              Total recorded in <strong class="text-info">{{ envStore.selectedEnvironmentId() }}</strong>:
+              <strong class="text-light">{{ overview.incidents.totalCount }}</strong>
             </div>
-            <a class="small link-info text-decoration-none d-inline-block mt-2" routerLink="/incidents">
-              View incident queue <i class="bi bi-arrow-right-short" aria-hidden="true"></i>
+            <a class="btn btn-sm btn-outline-info mt-auto align-self-start" routerLink="/incidents">
+              View all {{ overview.incidents.totalCount }} incidents <i class="bi bi-arrow-right-short" aria-hidden="true"></i>
             </a>
           </div>
         </div>
       </div>
 
       <div class="col-sm-6 col-xl-3">
-        <div class="card healops-surface h-100">
-          <div class="card-body">
-            <div class="text-secondary small text-uppercase">Pending Approvals</div>
+        <div class="card healops-surface healops-kpi healops-kpi--warning h-100">
+          <div class="card-body d-flex flex-column">
+            <div class="d-flex justify-content-between align-items-center">
+              <span class="text-secondary small text-uppercase fw-semibold">Pending Approvals</span>
+              <i class="bi bi-check2-circle text-warning fs-5" aria-hidden="true"></i>
+            </div>
             <div class="display-6 fw-bold text-warning mt-1">{{ overview.pendingApprovalCount }}</div>
-            <div class="small text-secondary mt-2">
+            <div class="small text-secondary mt-2 mb-2">
               @if (overview.pendingApprovalCount > 0) {
-                <span>Actions awaiting operator confirmation</span>
+                <span class="text-warning">Allowlisted fixes awaiting your approval</span>
               } @else {
-                <span>Approval queue is clear</span>
+                <span>Approval queue is currently clear</span>
               }
             </div>
-            <a class="small link-warning text-decoration-none d-inline-block mt-2" routerLink="/approvals">
+            <a class="btn btn-sm btn-outline-warning mt-auto align-self-start" routerLink="/approvals">
               Review approvals <i class="bi bi-arrow-right-short" aria-hidden="true"></i>
             </a>
           </div>
@@ -71,30 +87,39 @@
       </div>
 
       <div class="col-sm-6 col-xl-3">
-        <div class="card healops-surface h-100">
-          <div class="card-body">
-            <div class="text-secondary small text-uppercase">Remediation Success</div>
+        <div class="card healops-surface healops-kpi healops-kpi--success h-100">
+          <div class="card-body d-flex flex-column">
+            <div class="d-flex justify-content-between align-items-center">
+              <span class="text-secondary small text-uppercase fw-semibold">Remediation Success</span>
+              <i class="bi bi-shield-check text-success fs-5" aria-hidden="true"></i>
+            </div>
             <div class="display-6 fw-bold text-success mt-1">
               {{ overview.remediationAnalytics.overallSuccessRate * 100 | number: '1.0-1' }}%
             </div>
             <div class="small text-secondary mt-2">
-              {{ overview.remediationAnalytics.successfulOutcomes }} / {{ overview.remediationAnalytics.totalOutcomes }} outcomes
-              &bull; Rollback rate: {{ overview.remediationAnalytics.rollbackRate * 100 | number: '1.0-1' }}%
+              <strong class="text-light">{{ overview.remediationAnalytics.successfulOutcomes }}</strong> /
+              {{ overview.remediationAnalytics.totalOutcomes }} verified recoveries
+            </div>
+            <div class="small text-secondary mt-1">
+              Auto-rollback rate: <strong class="text-light">{{ overview.remediationAnalytics.rollbackRate * 100 | number: '1.0-1' }}%</strong>
             </div>
           </div>
         </div>
       </div>
 
       <div class="col-sm-6 col-xl-3">
-        <div class="card healops-surface h-100">
-          <div class="card-body">
-            <div class="text-secondary small text-uppercase">Recovery Velocity</div>
-            <div class="h3 fw-bold text-info mt-2 mb-1">
+        <div class="card healops-surface healops-kpi h-100">
+          <div class="card-body d-flex flex-column">
+            <div class="d-flex justify-content-between align-items-center">
+              <span class="text-secondary small text-uppercase fw-semibold">Recovery Velocity</span>
+              <i class="bi bi-stopwatch text-info fs-5" aria-hidden="true"></i>
+            </div>
+            <div class="h2 fw-bold text-info mt-2 mb-1">
               {{ formatMs(overview.remediationAnalytics.meanTimeToRecoveryMs) }}
             </div>
             <div class="small text-secondary">Mean Time to Recovery (MTTR)</div>
             <div class="small text-secondary mt-2">
-              Mean approval delay:
+              Mean approval wait:
               <strong class="text-light">{{ formatMs(overview.remediationAnalytics.meanApprovalDelayMs) }}</strong>
             </div>
           </div>
@@ -105,18 +130,22 @@
     <div class="row g-3">
       <div class="col-lg-6">
         <div class="card healops-surface h-100">
-          <div class="card-header border-secondary-subtle">
-            <h2 class="h6 mb-0 text-white">Incidents by Status</h2>
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <h2 class="h6 mb-0 text-white">Incidents by Workflow Status</h2>
+            <a class="small link-info text-decoration-none" routerLink="/incidents">Inspect list &rarr;</a>
           </div>
-          <div class="card-body d-flex flex-wrap gap-2">
+          <div class="card-body d-flex flex-wrap gap-2 align-items-center">
             @if ((overview.incidents.byStatus | keyvalue).length === 0) {
-              <p class="text-secondary small mb-0">No incidents recorded in this environment.</p>
+              <p class="text-secondary small mb-0">No incidents recorded in this environment yet.</p>
             } @else {
               @for (entry of overview.incidents.byStatus | keyvalue; track entry.key) {
-                <div class="d-flex align-items-center gap-2 px-2 py-1 rounded border border-secondary-subtle bg-dark">
+                <a
+                  class="d-flex align-items-center gap-2 px-3 py-2 rounded healops-subcard text-decoration-none"
+                  routerLink="/incidents"
+                >
                   <app-status-badge [value]="entry.key" prefix="Status" />
-                  <strong class="text-white small">{{ entry.value }}</strong>
-                </div>
+                  <span class="badge text-bg-light text-dark fw-bold">{{ entry.value }}</span>
+                </a>
               }
             }
           </div>
@@ -125,17 +154,17 @@
 
       <div class="col-lg-6">
         <div class="card healops-surface h-100">
-          <div class="card-header border-secondary-subtle">
+          <div class="card-header">
             <h2 class="h6 mb-0 text-white">Incidents by Severity</h2>
           </div>
-          <div class="card-body d-flex flex-wrap gap-2">
+          <div class="card-body d-flex flex-wrap gap-2 align-items-center">
             @if ((overview.incidents.bySeverity | keyvalue).length === 0) {
               <p class="text-secondary small mb-0">No severity breakdown available yet.</p>
             } @else {
               @for (entry of overview.incidents.bySeverity | keyvalue; track entry.key) {
-                <div class="d-flex align-items-center gap-2 px-2 py-1 rounded border border-secondary-subtle bg-dark">
+                <div class="d-flex align-items-center gap-2 px-3 py-2 rounded healops-subcard">
                   <app-status-badge [value]="entry.key" prefix="Severity" />
-                  <strong class="text-white small">{{ entry.value }}</strong>
+                  <span class="badge text-bg-light text-dark fw-bold">{{ entry.value }}</span>
                 </div>
               }
             }
@@ -146,13 +175,13 @@
 
     <div>
       <div class="d-flex justify-content-between align-items-center mb-2">
-        <h2 class="h5 mb-0 text-white">Infrastructure Service Health</h2>
-        <a class="small link-info text-decoration-none" routerLink="/services">Open topology &amp; telemetry</a>
+        <h2 class="h5 mb-0 text-white">Infrastructure &amp; Microservice Health</h2>
+        <a class="small link-info text-decoration-none" routerLink="/services">Open topology, metrics &amp; logs &rarr;</a>
       </div>
       @if (overview.serviceHealth.length === 0) {
         <div class="card healops-surface">
           <div class="card-body text-secondary small">
-            No service health cards reported yet for {{ envStore.selectedEnvironmentId() }}.
+            No service health cards reported yet for <strong>{{ envStore.selectedEnvironmentId() }}</strong>.
           </div>
         </div>
       } @else {
@@ -169,19 +198,19 @@
     <div class="row g-3">
       <div class="col-lg-7">
         <div class="card healops-surface h-100">
-          <div class="card-header border-secondary-subtle">
-            <h2 class="h6 mb-0 text-white">Remediation Analytics Breakdown</h2>
+          <div class="card-header">
+            <h2 class="h6 mb-0 text-white">Remediation Analytics by Allowlisted Action</h2>
           </div>
           <div class="card-body d-flex flex-column gap-3">
             @if (overview.remediationAnalytics.byActionType.length === 0) {
-              <p class="text-secondary small mb-0">No remediation outcomes recorded yet.</p>
+              <p class="text-secondary small mb-0">No remediation outcomes recorded in this environment yet.</p>
             } @else {
               <div class="table-responsive">
-                <table class="table table-dark table-sm align-middle mb-0 small" aria-label="Remediation analytics by action type">
+                <table class="table table-dark table-hover align-middle mb-0 small" aria-label="Remediation analytics by action type">
                   <thead>
                     <tr>
-                      <th scope="col">Action Type</th>
-                      <th scope="col">Outcomes</th>
+                      <th scope="col">Remediation Action</th>
+                      <th scope="col">Verified Outcomes</th>
                       <th scope="col">Success Rate</th>
                       <th scope="col">Rollbacks</th>
                       <th scope="col">Mean Duration</th>
@@ -190,11 +219,18 @@
                   <tbody>
                     @for (row of overview.remediationAnalytics.byActionType; track row.actionType) {
                       <tr>
-                        <td class="font-monospace text-info">{{ row.actionType }}</td>
-                        <td>{{ row.successfulOutcomes }} / {{ row.totalOutcomes }}</td>
-                        <td>{{ row.successRate * 100 | number: '1.0-1' }}%</td>
+                        <td>
+                          <div class="fw-semibold text-white">{{ formatActionLabel(row.actionType) }}</div>
+                          <div class="font-monospace text-info small">{{ row.actionType }}</div>
+                        </td>
+                        <td class="fw-semibold">{{ row.successfulOutcomes }} / {{ row.totalOutcomes }}</td>
+                        <td>
+                          <span class="badge" [class.text-bg-success]="row.successRate >= 0.8" [class.text-bg-warning]="row.successRate < 0.8">
+                            {{ row.successRate * 100 | number: '1.0-0' }}%
+                          </span>
+                        </td>
                         <td>{{ row.rollbackCount }} ({{ row.rollbackRate * 100 | number: '1.0-0' }}%)</td>
-                        <td>{{ formatMs(row.meanDurationMs) }}</td>
+                        <td class="font-monospace">{{ formatMs(row.meanDurationMs) }}</td>
                       </tr>
                     }
                   </tbody>
@@ -207,9 +243,9 @@
 
       <div class="col-lg-5">
         <div class="card healops-surface h-100">
-          <div class="card-header border-secondary-subtle d-flex justify-content-between align-items-center">
-            <h2 class="h6 mb-0 text-white">Manual Demo Alert Intake</h2>
-            <span class="badge text-bg-secondary">{{ envStore.selectedEnvironmentId() }}</span>
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <h2 class="h6 mb-0 text-white">Trigger Incident / Fault Simulator</h2>
+            <span class="badge text-bg-info font-monospace">{{ envStore.selectedEnvironmentId() }}</span>
           </div>
           <div class="card-body">
             @if (!authStore.canWrite()) {
@@ -218,22 +254,37 @@
                 Read-only viewer role: creating manual alerts requires <code>incident:write</code> authority.
               </p>
             } @else {
-              @if (envStore.selectedEnvironmentId() === 'demo') {
-                <div class="d-flex justify-content-between align-items-center mb-2 pb-2 border-bottom border-secondary-subtle">
-                  <span class="small text-secondary">Demo Sandbox quick fill:</span>
+              <div class="mb-3 pb-2 border-bottom border-secondary-subtle">
+                <div class="small text-secondary mb-1">1-Click Scenario Presets:</div>
+                <div class="d-flex flex-wrap gap-1">
                   <button
                     type="button"
                     class="btn btn-sm btn-outline-info"
+                    (click)="applyPitstopRollbackPreset()"
+                  >
+                    <i class="bi bi-lightning-charge me-1" aria-hidden="true"></i>Pitstop K8s Rollout Fault
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-outline-warning"
+                    (click)="applyPitstopLatencyPreset()"
+                  >
+                    <i class="bi bi-stopwatch me-1" aria-hidden="true"></i>Pitstop K8s High Latency
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-outline-secondary"
                     (click)="applyDemoWorkloadPreset()"
                   >
-                    <i class="bi bi-lightning-charge me-1" aria-hidden="true"></i>Load demo-workload preset
+                    Docker Demo Workload
                   </button>
                 </div>
-              }
+              </div>
+
               <form class="d-flex flex-column gap-2" (ngSubmit)="submitDemoAlert()">
                 <div class="row g-2">
                   <div class="col-sm-7">
-                    <label for="alertService" class="form-label small text-secondary mb-1">Service</label>
+                    <label for="alertService" class="form-label small text-secondary mb-1">Target Service</label>
                     <input
                       id="alertService"
                       name="alertService"
@@ -262,26 +313,54 @@
 
                 <div class="row g-2">
                   <div class="col-sm-6">
-                    <label for="alertSource" class="form-label small text-secondary mb-1">Source</label>
+                    <label for="alertNamespace" class="form-label small text-secondary mb-1">K8s Namespace (optional)</label>
                     <input
-                      id="alertSource"
-                      name="alertSource"
+                      id="alertNamespace"
+                      name="alertNamespace"
                       type="text"
-                      class="form-control form-control-sm bg-dark text-white border-secondary"
-                      [ngModel]="alertSource()"
-                      (ngModelChange)="alertSource.set($event)"
+                      class="form-control form-control-sm bg-dark text-white border-secondary font-monospace"
+                      placeholder="e.g. pitstop"
+                      [ngModel]="alertNamespace()"
+                      (ngModelChange)="alertNamespace.set($event)"
                     />
                   </div>
                   <div class="col-sm-6">
-                    <label for="alertContainer" class="form-label small text-secondary mb-1">Container Label (optional)</label>
+                    <label for="alertDeployment" class="form-label small text-secondary mb-1">K8s Deployment (optional)</label>
+                    <input
+                      id="alertDeployment"
+                      name="alertDeployment"
+                      type="text"
+                      class="form-control form-control-sm bg-dark text-white border-secondary font-monospace"
+                      placeholder="e.g. customer"
+                      [ngModel]="alertDeployment()"
+                      (ngModelChange)="alertDeployment.set($event)"
+                    />
+                  </div>
+                </div>
+
+                <div class="row g-2">
+                  <div class="col-sm-6">
+                    <label for="alertContainer" class="form-label small text-secondary mb-1">Docker Container (optional)</label>
                     <input
                       id="alertContainer"
                       name="alertContainer"
                       type="text"
-                      class="form-control form-control-sm bg-dark text-white border-secondary"
-                      placeholder="e.g. demo-web"
+                      class="form-control form-control-sm bg-dark text-white border-secondary font-monospace"
+                      placeholder="e.g. healops-demo-workload"
                       [ngModel]="alertContainer()"
                       (ngModelChange)="alertContainer.set($event)"
+                    />
+                  </div>
+                  <div class="col-sm-6">
+                    <label for="alertLatencyMs" class="form-label small text-secondary mb-1">Observed Latency (optional)</label>
+                    <input
+                      id="alertLatencyMs"
+                      name="alertLatencyMs"
+                      type="text"
+                      class="form-control form-control-sm bg-dark text-white border-secondary font-monospace"
+                      placeholder="e.g. 1650ms"
+                      [ngModel]="alertLatencyMs()"
+                      (ngModelChange)="alertLatencyMs.set($event)"
                     />
                   </div>
                 </div>
@@ -306,7 +385,7 @@
                   <div class="alert alert-success py-2 small mb-0 d-flex justify-content-between align-items-center" role="status">
                     <span>Alert ingested ({{ createdId.slice(0, 8) }}).</span>
                     <button type="button" class="btn btn-sm btn-outline-light" (click)="openCreatedIncident()">
-                      Inspect
+                      Inspect Investigation
                     </button>
                   </div>
                 }
@@ -319,7 +398,7 @@
                   @if (submittingAlert()) {
                     <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
                   }
-                  Trigger Demo Alert
+                  Trigger Alert in {{ envStore.selectedEnvironmentId() }}
                 </button>
               </form>
             }
@@ -329,8 +408,8 @@
     </div>
 
     <div class="card healops-surface">
-      <div class="card-header border-secondary-subtle d-flex justify-content-between align-items-center">
-        <h2 class="h6 mb-0 text-white">Live Environment Events</h2>
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h2 class="h6 mb-0 text-white">Live Environment Event Stream</h2>
         <app-status-badge [value]="dashboardStore.connectionState()" prefix="SSE connection" />
       </div>
       <div class="card-body">
@@ -339,13 +418,13 @@
         } @else {
           <ul class="list-unstyled mb-0 d-flex flex-column gap-2 small">
             @for (ev of dashboardStore.recentEvents(); track ev.id + ':' + ev.sequenceNumber) {
-              <li class="d-flex flex-wrap justify-content-between align-items-center gap-2 pb-2 border-bottom border-secondary-subtle">
-                <div class="d-flex align-items-center gap-2">
+              <li class="d-flex flex-wrap justify-content-between align-items-center gap-2 p-2 healops-subcard">
+                <div class="d-flex flex-wrap align-items-center gap-2">
                   <span class="badge text-bg-secondary font-monospace">#{{ ev.sequenceNumber }}</span>
                   <strong class="text-info">{{ ev.type }}</strong>
                   @if (ev.incidentId) {
-                    <a class="link-light font-monospace text-decoration-none" [routerLink]="['/incidents', ev.incidentId]">
-                      {{ ev.incidentId.slice(0, 8) }}
+                    <a class="btn btn-sm btn-outline-info py-0 px-2 font-monospace" [routerLink]="['/incidents', ev.incidentId]">
+                      Incident {{ ev.incidentId.slice(0, 8) }}
                     </a>
                   }
                 </div>

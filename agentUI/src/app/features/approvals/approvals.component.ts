@@ -1,4 +1,4 @@
-import { DatePipe, JsonPipe } from '@angular/common';
+import { DatePipe, KeyValuePipe } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -34,7 +34,7 @@ interface PendingDecisionPrompt {
 @Component({
   selector: 'app-approvals',
   standalone: true,
-  imports: [DatePipe, FormsModule, JsonPipe, RouterLink, StatusBadgeComponent],
+  imports: [DatePipe, FormsModule, KeyValuePipe, RouterLink, StatusBadgeComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <section class="d-flex flex-column gap-3" aria-label="Remediation approval queue">
@@ -173,15 +173,26 @@ interface PendingDecisionPrompt {
 
                 <div class="row g-3 small">
                   <div class="col-md-7">
-                    <div class="text-secondary text-uppercase mb-1">Command Preview (Human Readable Only)</div>
-                    <pre class="healops-pre mb-0">{{ item.commandPreview }}</pre>
+                    <div class="text-secondary text-uppercase fw-semibold mb-1">Equivalent CLI Command Preview</div>
+                    <pre class="healops-pre text-info mb-0">{{ item.commandPreview }}</pre>
                   </div>
-                  <div class="col-md-5">
-                    <div class="text-secondary text-uppercase mb-1">Rollback Strategy &amp; Arguments</div>
-                    <p class="mb-2 text-light">
-                      {{ item.rollbackStrategy || 'No automated rollback available; failed verification marks incident failed.' }}
-                    </p>
-                    <pre class="healops-pre mb-0">{{ item.arguments | json }}</pre>
+                  <div class="col-md-5 d-flex flex-column gap-2">
+                    <div>
+                      <div class="text-secondary text-uppercase fw-semibold mb-1">Target Parameters</div>
+                      <div class="d-flex flex-wrap gap-1">
+                        @for (arg of item.arguments | keyvalue; track arg.key) {
+                          <span class="healops-kv-chip">
+                            <strong>{{ arg.key }}</strong> {{ arg.value }}
+                          </span>
+                        }
+                      </div>
+                    </div>
+                    <div>
+                      <div class="text-secondary text-uppercase fw-semibold mb-1">Rollback Safety Strategy</div>
+                      <div class="text-light">
+                        {{ item.rollbackStrategy || 'No automated rollback available; failed verification marks incident failed.' }}
+                      </div>
+                    </div>
                   </div>
                 </div>
 

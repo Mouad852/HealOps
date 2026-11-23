@@ -39,6 +39,45 @@ import { StatusBadgeComponent } from '../../shared/status-badge/status-badge.com
         </div>
 
         <div class="d-flex flex-wrap align-items-center gap-2">
+          <div class="btn-group btn-group-sm" role="group" aria-label="Quick status filters">
+            <button
+              type="button"
+              class="btn"
+              [class.btn-info]="statusFilter() === ''"
+              [class.btn-outline-secondary]="statusFilter() !== ''"
+              (click)="onStatusFilterChange('')"
+            >
+              All
+            </button>
+            <button
+              type="button"
+              class="btn"
+              [class.btn-warning]="statusFilter() === 'AWAITING_APPROVAL'"
+              [class.btn-outline-secondary]="statusFilter() !== 'AWAITING_APPROVAL'"
+              (click)="onStatusFilterChange('AWAITING_APPROVAL')"
+            >
+              Awaiting Approval
+            </button>
+            <button
+              type="button"
+              class="btn"
+              [class.btn-success]="statusFilter() === 'CLOSED'"
+              [class.btn-outline-secondary]="statusFilter() !== 'CLOSED'"
+              (click)="onStatusFilterChange('CLOSED')"
+            >
+              Closed
+            </button>
+            <button
+              type="button"
+              class="btn"
+              [class.btn-danger]="statusFilter() === 'FAILED'"
+              [class.btn-outline-secondary]="statusFilter() !== 'FAILED'"
+              (click)="onStatusFilterChange('FAILED')"
+            >
+              Failed
+            </button>
+          </div>
+
           <label class="visually-hidden" for="statusFilter">Filter by status</label>
           <select
             id="statusFilter"
@@ -93,43 +132,76 @@ import { StatusBadgeComponent } from '../../shared/status-badge/status-badge.com
           } @else if (incidents().length === 0) {
             <div class="text-center py-5 text-secondary">
               <i class="bi bi-shield-check fs-2 d-block mb-2 text-success" aria-hidden="true"></i>
-              No incidents match the current filters.
+              No incidents match the current filters in <strong>{{ envStore.selectedEnvironmentId() }}</strong>.
             </div>
           } @else {
             <div class="table-responsive">
               <table class="table table-dark table-hover align-middle mb-0 small" aria-label="Incidents table">
                 <thead>
                   <tr>
-                    <th scope="col">ID</th>
+                    <th scope="col">Incident</th>
                     <th scope="col">Severity</th>
-                    <th scope="col">Service</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Source</th>
+                    <th scope="col">Service &amp; Infrastructure Target</th>
+                    <th scope="col">Alert Summary &amp; Signals</th>
+                    <th scope="col">Workflow Status</th>
                     <th scope="col">Started</th>
-                    <th scope="col">Version</th>
-                    <th scope="col"><span class="visually-hidden">Actions</span></th>
+                    <th scope="col" class="text-end">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   @for (inc of incidents(); track inc.id) {
                     <tr>
                       <td class="font-monospace">
-                        <a class="link-info text-decoration-none fw-semibold" [routerLink]="['/incidents', inc.id]">
-                          {{ inc.id.slice(0, 8) }}
+                        <a
+                          class="link-info text-decoration-none fw-bold"
+                          [routerLink]="['/incidents', inc.id]"
+                          [title]="inc.id"
+                        >
+                          #{{ inc.id.slice(0, 8) }}
                         </a>
+                        <div class="text-secondary" style="font-size: 0.72rem;">{{ inc.source }} &bull; v{{ inc.version }}</div>
                       </td>
                       <td><app-status-badge [value]="inc.severity" prefix="Severity" /></td>
-                      <td class="fw-semibold text-white">{{ inc.service }}</td>
-                      <td><app-status-badge [value]="inc.status" prefix="Status" /></td>
-                      <td class="text-secondary">{{ inc.source }}</td>
                       <td>
+                        <div class="fw-bold text-white">{{ inc.service }}</div>
+                        <div class="d-flex flex-wrap gap-1 mt-1">
+                          @for (chip of targetChips(inc); track chip.key) {
+                            <span class="healops-kv-chip">
+                              <strong>{{ chip.key }}</strong> {{ chip.value }}
+                            </span>
+                          }
+                        </div>
+                      </td>
+                      <td style="max-width: 340px;">
+                        <div class="text-light">{{ summaryText(inc) }}</div>
+                        @if (signalChips(inc).length > 0) {
+                          <div class="d-flex flex-wrap gap-1 mt-1">
+                            @for (sig of signalChips(inc); track sig.key) {
+                              <span class="badge text-bg-dark border border-warning-subtle text-warning font-monospace">
+                                {{ sig.key }}: {{ sig.value }}
+                              </span>
+                            }
+                          </div>
+                        }
+                      </td>
+                      <td><app-status-badge [value]="inc.status" prefix="Status" /></td>
+                      <td class="text-nowrap">
                         <time [attr.datetime]="inc.startedAt">{{ inc.startedAt | date: 'short' }}</time>
                       </td>
-                      <td class="font-monospace text-secondary">v{{ inc.version }}</td>
-                      <td class="text-end">
-                        <a class="btn btn-sm btn-outline-info" [routerLink]="['/incidents', inc.id]">
-                          Inspect
-                        </a>
+                      <td class="text-end text-nowrap">
+                        <div class="d-inline-flex gap-1">
+                          <a class="btn btn-sm btn-info fw-semibold" [routerLink]="['/incidents', inc.id]">
+                            Investigate
+                          </a>
+                          <a
+                            class="btn btn-sm btn-outline-secondary"
+                            [routerLink]="['/chat']"
+                            [queryParams]="{ incidentId: inc.id }"
+                            title="Ask Copilot about this incident"
+                          >
+                            <i class="bi bi-chat-dots" aria-hidden="true"></i>
+                          </a>
+                        </div>
                       </td>
                     </tr>
                   }
@@ -218,6 +290,48 @@ export class IncidentsComponent {
 
   onSeverityFilterChange(value: string): void {
     this.severityFilter.set(value as IncidentSeverity | '');
+  }
+
+  summaryText(inc: IncidentResponse): string {
+    const s = inc.annotations?.['summary'];
+    if (s && s.trim().length > 0) {
+      return s.trim();
+    }
+    return `Automated ${inc.severity.toLowerCase()} incident on ${inc.service}`;
+  }
+
+  targetChips(inc: IncidentResponse): readonly { readonly key: string; readonly value: string }[] {
+    const chips: { key: string; value: string }[] = [];
+    const labels = inc.labels ?? {};
+    if (labels['namespace']) {
+      chips.push({ key: 'ns', value: labels['namespace'] });
+    }
+    if (labels['deployment']) {
+      chips.push({ key: 'deploy', value: labels['deployment'] });
+    } else if (labels['workload']) {
+      chips.push({ key: 'workload', value: labels['workload'] });
+    }
+    if (labels['container']) {
+      chips.push({ key: 'container', value: labels['container'] });
+    }
+    if (labels['node']) {
+      chips.push({ key: 'node', value: labels['node'] });
+    }
+    if (chips.length === 0) {
+      chips.push({ key: 'env', value: inc.environmentId });
+    }
+    return chips;
+  }
+
+  signalChips(inc: IncidentResponse): readonly { readonly key: string; readonly value: string }[] {
+    const chips: { key: string; value: string }[] = [];
+    const ann = inc.annotations ?? {};
+    for (const [k, v] of Object.entries(ann)) {
+      if (k !== 'summary' && v) {
+        chips.push({ key: k, value: v });
+      }
+    }
+    return chips;
   }
 
   reload(): void {

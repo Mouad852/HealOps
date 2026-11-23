@@ -3,13 +3,16 @@ import {
   ChangeDetectionStrategy,
   Component,
   DestroyRef,
+  SecurityContext,
   effect,
   inject,
   signal,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
+import { DomSanitizer } from '@angular/platform-browser';
 import { ActivatedRoute, RouterLink } from '@angular/router';
+import { marked } from 'marked';
 import { firstValueFrom } from 'rxjs';
 import {
   ConversationDetailResponse,
@@ -111,13 +114,20 @@ import { StatusBadgeComponent } from '../../shared/status-badge/status-badge.com
                     <app-status-badge [value]="roleBadgeTone(msg.role)" [label]="msg.role" prefix="Message role" />
                     <time class="text-secondary" [attr.datetime]="msg.createdAt">{{ msg.createdAt | date: 'shortTime' }}</time>
                   </div>
-                  <div class="small text-light" style="white-space: pre-wrap;">{{ msg.content }}</div>
+                  @if (msg.role === 'ASSISTANT') {
+                    <div class="healops-markdown small text-light border-0 p-0 bg-transparent" [innerHTML]="renderMarkdown(msg.content)"></div>
+                  } @else {
+                    <div class="small text-light" style="white-space: pre-wrap;">{{ msg.content }}</div>
+                  }
 
                   @if (msg.incidentId || msg.evidenceId || msg.executionId) {
-                    <div class="d-flex flex-wrap gap-2 mt-2 pt-2 border-top border-secondary-subtle small font-monospace">
+                    <div class="d-flex flex-wrap align-items-center gap-2 mt-2 pt-2 border-top border-secondary-subtle small font-monospace">
                       @if (msg.incidentId) {
                         <a class="link-info text-decoration-none" [routerLink]="['/incidents', msg.incidentId]">
                           <i class="bi bi-exclamation-octagon me-1" aria-hidden="true"></i>Incident {{ msg.incidentId.slice(0, 8) }}
+                        </a>
+                        <a class="btn btn-sm btn-warning py-0 px-2 fw-semibold" routerLink="/approvals">
+                          <i class="bi bi-check2-circle me-1" aria-hidden="true"></i>Review &amp; Approve in /approvals
                         </a>
                       }
                       @if (msg.evidenceId) {
@@ -160,6 +170,19 @@ import { StatusBadgeComponent } from '../../shared/status-badge/status-badge.com
               />
             </div>
 
+            <div class="d-flex flex-wrap gap-2" role="group" aria-label="Quick investigation prompts">
+              @for (prompt of quickPrompts; track prompt) {
+                <button
+                  type="button"
+                  class="btn btn-sm btn-outline-info"
+                  [disabled]="sending()"
+                  (click)="sendQuickPrompt(prompt)"
+                >
+                  {{ prompt }}
+                </button>
+              }
+            </div>
+
             <div class="input-group">
               <label for="chatMessageInput" class="visually-hidden">Message to HealOps Copilot</label>
               <input
@@ -198,6 +221,7 @@ export class ChatComponent {
   readonly sse = inject(DashboardEventsService);
   private readonly api = inject(HealopsApiClient);
   private readonly route = inject(ActivatedRoute);
+  private readonly sanitizer = inject(DomSanitizer);
   private readonly destroyRef = inject(DestroyRef);
 
   readonly sessions = signal<readonly ConversationSessionResponse[]>([]);
@@ -213,6 +237,12 @@ export class ChatComponent {
 
   static readonly POLL_INTERVAL_MS = 2500;
   static readonly POLL_TIMEOUT_MS = 30000;
+
+  readonly quickPrompts: readonly string[] = [
+    'Analyze Loki logs & traces for this incident',
+    'Summarize active incidents & recommended fixes',
+    'Inspect recent errors & latency bottlenecks',
+  ];
 
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private pollStartedAt = 0;
@@ -280,6 +310,15 @@ export class ChatComponent {
     }
   }
 
+  renderMarkdown(content: string): string {
+    const raw = (content ?? '').trim();
+    if (!raw) {
+      return '';
+    }
+    const html = marked.parse(raw, { async: false });
+    return this.sanitizer.sanitize(SecurityContext.HTML, html) ?? raw;
+  }
+
   async createNewSession(): Promise<ConversationSessionResponse | null> {
     if (this.creatingSession()) {
       return null;
@@ -316,6 +355,14 @@ export class ChatComponent {
     } catch (err: unknown) {
       this.error.set(toApiErrorMessage(err, 'Unable to load conversation messages.'));
     }
+  }
+
+  sendQuickPrompt(prompt: string): void {
+    if (this.sending()) {
+      return;
+    }
+    this.draftMessage.set(prompt);
+    void this.sendMessage();
   }
 
   async sendMessage(): Promise<void> {

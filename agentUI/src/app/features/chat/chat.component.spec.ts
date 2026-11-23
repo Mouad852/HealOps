@@ -246,4 +246,54 @@ describe('ChatComponent', () => {
     expect(comp.activeSession()?.messages.length).toBe(2);
     expect(comp.activeSession()?.messages[1].content).toBe('1 active incident in local.');
   }));
+
+  it('sends quick investigation prompt chip on click', fakeAsync(() => {
+    const fixture = TestBed.createComponent(ChatComponent);
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/v1/conversations?environmentId=local').flush([
+      {
+        id: 'sess-quick',
+        environmentId: 'local',
+        title: 'Quick prompt session',
+        createdAt: '2026-11-22T12:00:00Z',
+        updatedAt: '2026-11-22T12:00:00Z',
+      },
+    ]);
+    tick();
+
+    httpMock.expectOne('/api/v1/conversations/sess-quick').flush({
+      id: 'sess-quick',
+      environmentId: 'local',
+      title: 'Quick prompt session',
+      createdAt: '2026-11-22T12:00:00Z',
+      updatedAt: '2026-11-22T12:00:00Z',
+      messages: [],
+    });
+    tick();
+    fixture.detectChanges();
+
+    const comp = fixture.componentInstance;
+    comp.sendQuickPrompt(comp.quickPrompts[0]);
+
+    const postReq = httpMock.expectOne('/api/v1/conversations/sess-quick/messages');
+    expect(postReq.request.body.content).toBe('Analyze Loki logs & traces for this incident');
+    postReq.flush(
+      {
+        messageId: 'msg-q1',
+        sessionId: 'sess-quick',
+        role: 'USER',
+        content: 'Analyze Loki logs & traces for this incident',
+        evidenceId: null,
+        executionId: null,
+        incidentId: null,
+        createdAt: '2026-11-22T12:01:00Z',
+        status: 'ACCEPTED',
+      },
+      { status: 202, statusText: 'Accepted' }
+    );
+    tick();
+    comp.awaitingAssistant.set(false);
+    tick(ChatComponent.POLL_INTERVAL_MS);
+  }));
 });

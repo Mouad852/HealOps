@@ -47,6 +47,23 @@
         </ul>
 
         <div class="d-flex flex-wrap align-items-center gap-2">
+          @if (envStore.environments().length > 1) {
+            <div class="btn-group btn-group-sm d-none d-xl-inline-flex" role="group" aria-label="Quick environment switcher">
+              @for (env of envStore.environments(); track env.id) {
+                <button
+                  type="button"
+                  class="btn"
+                  [class.btn-info]="envStore.selectedEnvironmentId() === env.id"
+                  [class.fw-semibold]="envStore.selectedEnvironmentId() === env.id"
+                  [class.btn-outline-secondary]="envStore.selectedEnvironmentId() !== env.id"
+                  (click)="envStore.selectEnvironment(env.id)"
+                >
+                  {{ env.displayLabel }}
+                </button>
+              }
+            </div>
+          }
+
           <label for="envSelector" class="text-secondary small text-nowrap mb-0">
             <i class="bi bi-hdd-network me-1" aria-hidden="true"></i>Environment
           </label>
