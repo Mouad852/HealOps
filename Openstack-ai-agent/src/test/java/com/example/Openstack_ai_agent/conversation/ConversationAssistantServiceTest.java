@@ -165,4 +165,285 @@ class ConversationAssistantServiceTest {
         verify(snapshotRepo, never()).findAll();
         verify(actionRepo, never()).findAll();
     }
+
+    @Test
+    void copilotLogAndTraceToolsQueryLiveLokiJaegerWithRedactionAndFallBackToLocalEvidence() throws Exception {
+        IncidentRepository incidentRepo = mock(IncidentRepository.class);
+        var diagnosisRepo = mock(com.example.Openstack_ai_agent.diagnosis.DiagnosisRepository.class);
+        var evidenceRepo = mock(com.example.Openstack_ai_agent.evidence.EvidenceItemRepository.class);
+        var actionRepo = mock(com.example.Openstack_ai_agent.remediation.ProposedActionRepository.class);
+        var snapshotRepo = mock(com.example.Openstack_ai_agent.diagnosis.HealthSnapshotRepository.class);
+        var backendClient = mock(com.example.Openstack_ai_agent.observability.ObservabilityBackendClient.class);
+        var validator = new com.example.Openstack_ai_agent.observability.ObservabilityQueryValidator(
+                new com.example.Openstack_ai_agent.observability.ObservabilityQueryProperties()
+        );
+        var calculator = new com.example.Openstack_ai_agent.observability.TraceAnalysisCalculator();
+        var objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+
+        CopilotToolQueryService tools = new CopilotToolQueryService(
+                incidentRepo,
+                diagnosisRepo,
+                evidenceRepo,
+                actionRepo,
+                snapshotRepo,
+                new com.example.Openstack_ai_agent.remediation.ActionCatalogValidator(),
+                new ConversationSanitizer(),
+                backendClient,
+                validator,
+                calculator
+        );
+        CopilotToolQueryService.ScopedCopilotTools scoped = tools.scopedTools("demo");
+
+        // 1. Live Loki + Jaeger mode
+        when(backendClient.isLiveQueryEnabled()).thenReturn(true);
+        var lokiJson = objectMapper.readTree("""
+                {
+                  "status": "success",
+                  "data": {
+                    "result": [
+                      {
+                        "stream": { "service_name": "demo-workload", "level": "ERROR" },
+                        "values": [ [ "4000000000000000000", "Downstream failure token=loki-secret-1" ] ]
+                      }
+                    ]
+                  }
+                }
+                """);
+        when(backendClient.queryLokiRange(
+                org.mockito.ArgumentMatchers.contains("deployment_environment=\"demo\""),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyInt()
+        )).thenReturn(java.util.Optional.of(lokiJson));
+
+        String traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+        var jaegerJson = objectMapper.readTree("""
+                {
+                  "result": {
+                    "resourceSpans": [
+                      {
+                        "resource": { "attributes": [ { "key": "service.name", "value": { "stringValue": "demo-workload" } } ] },
+                        "scopeSpans": [ { "spans": [ {
+                          "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+                          "spanId": "s1",
+                          "name": "GET /work",
+                          "startTimeUnixNano": "1700000000000000000",
+                          "endTimeUnixNano":   "1700000001200000000",
+                          "status": { "code": 2 }
+                        } ] } ]
+                      },
+                      {
+                        "resource": { "attributes": [ { "key": "service.name", "value": { "stringValue": "demo-inventory-db" } } ] },
+                        "scopeSpans": [ { "spans": [ {
+                          "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+                          "spanId": "s2",
+                          "parentSpanId": "s1",
+                          "name": "SELECT inventory_items",
+                          "startTimeUnixNano": "1700000000100000000",
+                          "endTimeUnixNano":   "1700000001050000000",
+                          "attributes": [ { "key": "error.message", "value": { "stringValue": "db timeout secret=jaeger-secret-2" } } ],
+                          "status": { "code": 2 }
+                        } ] } ]
+                      }
+                    ]
+                  }
+                }
+                """);
+        when(backendClient.queryJaegerV3TraceById(traceId)).thenReturn(java.util.Optional.of(jaegerJson));
+
+        Map<String, Object> liveLogs = scoped.searchServiceLogs("demo-workload", null, 30, 10);
+        assertThat(liveLogs.get("dataSource")).isEqualTo("LOKI");
+        assertThat(liveLogs.get("environmentId")).isEqualTo("demo");
+        assertThat(liveLogs.get("logs").toString()).contains("token=[REDACTED]").doesNotContain("loki-secret-1");
+
+        Map<String, Object> liveTrace = scoped.inspectServiceTraces("demo-workload", traceId, 30, 5);
+        assertThat(liveTrace.get("dataSource")).isEqualTo("JAEGER_V3");
+        assertThat(liveTrace.get("errorSpanCount")).isEqualTo(2);
+        assertThat(liveTrace.get("criticalPath").toString()).contains("demo-inventory-db/SELECT inventory_items");
+        assertThat(liveTrace.get("errorSpans").toString()).contains("secret=[REDACTED]").doesNotContain("jaeger-secret-2");
+
+        // 2. Invalid input rejected safely
+        assertThat(scoped.searchServiceLogs("bad service!@#", null, 30, 10)).containsKey("error");
+        assertThat(scoped.inspectServiceTraces(null, "invalid trace!", 30, 5)).containsKey("error");
+
+        // 3. Offline / live-query-disabled fallback to environment-scoped local evidence
+        when(backendClient.isLiveQueryEnabled()).thenReturn(false);
+        IncidentEntity demoIncident = IncidentEntity.alertReceived(new CreateIncidentRequest(
+                "alertmanager", "ext-log-1", "fp-log-1", "demo", IncidentSeverity.HIGH,
+                "demo-workload", OffsetDateTime.now().minusMinutes(5), Map.of(), Map.of(), traceId
+        ));
+        when(incidentRepo.findByEnvironmentIdAndService("demo", "demo-workload")).thenReturn(List.of(demoIncident));
+        when(incidentRepo.findByEnvironmentIdAndTraceId("demo", traceId)).thenReturn(List.of(demoIncident));
+
+        var logEv = mock(com.example.Openstack_ai_agent.evidence.EvidenceItemEntity.class);
+        when(logEv.getId()).thenReturn(UUID.randomUUID());
+        when(logEv.getIncidentId()).thenReturn(demoIncident.getId());
+        when(logEv.getObservedAt()).thenReturn(OffsetDateTime.now().minusMinutes(1));
+        when(logEv.getSource()).thenReturn("loki");
+        when(logEv.getTarget()).thenReturn("demo-workload");
+        when(logEv.getTraceId()).thenReturn(traceId);
+        when(logEv.getExcerpt()).thenReturn("ERROR local stored log password=local-pw");
+
+        var traceEv = mock(com.example.Openstack_ai_agent.evidence.EvidenceItemEntity.class);
+        when(traceEv.getId()).thenReturn(UUID.randomUUID());
+        when(traceEv.getIncidentId()).thenReturn(demoIncident.getId());
+        when(traceEv.getObservedAt()).thenReturn(OffsetDateTime.now().minusMinutes(1));
+        when(traceEv.getSource()).thenReturn("jaeger");
+        when(traceEv.getTarget()).thenReturn("demo-workload");
+        when(traceEv.getTraceId()).thenReturn(traceId);
+        when(traceEv.getExcerpt()).thenReturn("{\"traceId\":\"" + traceId + "\",\"errorSpanCount\":2}");
+
+        when(evidenceRepo.findByIncidentIdInAndTypeOrderByObservedAtDesc(
+                java.util.Set.of(demoIncident.getId()),
+                com.example.Openstack_ai_agent.evidence.EvidenceType.LOG
+        )).thenReturn(List.of(logEv));
+        when(evidenceRepo.findByIncidentIdInAndTypeOrderByObservedAtDesc(
+                java.util.Set.of(demoIncident.getId()),
+                com.example.Openstack_ai_agent.evidence.EvidenceType.TRACE
+        )).thenReturn(List.of(traceEv));
+
+        Map<String, Object> fallbackLogs = scoped.searchServiceLogs("demo-workload", traceId, 30, 10);
+        assertThat(fallbackLogs.get("dataSource")).isEqualTo("LOCAL_EVIDENCE");
+        assertThat(fallbackLogs.get("logs").toString()).contains("password=[REDACTED]").doesNotContain("local-pw");
+
+        Map<String, Object> fallbackTraces = scoped.inspectServiceTraces("demo-workload", traceId, 30, 5);
+        assertThat(fallbackTraces.get("dataSource")).isEqualTo("LOCAL_EVIDENCE");
+        assertThat(fallbackTraces.get("traceCount")).isEqualTo(1);
+
+        // Ensure cross-env repositories were never queried globally
+        verify(incidentRepo, never()).findAll();
+        verify(evidenceRepo, never()).findAll();
+    }
+
+    @Test
+    void copilotListsLiveKubernetesPodsAndBuildsOperationalContext() throws Exception {
+        IncidentRepository incidentRepo = mock(IncidentRepository.class);
+        var diagnosisRepo = mock(com.example.Openstack_ai_agent.diagnosis.DiagnosisRepository.class);
+        var evidenceRepo = mock(com.example.Openstack_ai_agent.evidence.EvidenceItemRepository.class);
+        var actionRepo = mock(com.example.Openstack_ai_agent.remediation.ProposedActionRepository.class);
+        var snapshotRepo = mock(com.example.Openstack_ai_agent.diagnosis.HealthSnapshotRepository.class);
+        var adapterClient = mock(com.example.Openstack_ai_agent.evidence.EvidenceAdapterClient.class);
+        var objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+
+        when(incidentRepo.findByEnvironmentId("local")).thenReturn(List.of());
+        when(adapterClient.kubernetesPods("pitstop")).thenReturn(objectMapper.readTree("""
+                [
+                  {
+                    "name": "customer-5dd65b5bf-58btl",
+                    "namespace": "pitstop",
+                    "phase": "Running",
+                    "ready": "1/1",
+                    "restarts": 0,
+                    "terminating": false,
+                    "node": "desktop-control-plane",
+                    "containers": ["customer"]
+                  },
+                  {
+                    "name": "gateway-9b894c5d-2fcpm",
+                    "namespace": "pitstop",
+                    "phase": "Running",
+                    "ready": "1/1",
+                    "restarts": 0,
+                    "terminating": false,
+                    "node": "desktop-control-plane",
+                    "containers": ["gateway"]
+                  }
+                ]
+                """));
+
+        CopilotToolQueryService tools = new CopilotToolQueryService(
+                incidentRepo,
+                diagnosisRepo,
+                evidenceRepo,
+                actionRepo,
+                snapshotRepo,
+                new com.example.Openstack_ai_agent.remediation.ActionCatalogValidator(),
+                new ConversationSanitizer()
+        );
+        tools.setEvidenceAdapterClient(adapterClient);
+
+        Map<String, Object> podsResult = tools.scopedTools("local").listKubernetesPods("pitstop");
+        assertThat(podsResult.get("podCount")).isEqualTo(2);
+        assertThat(podsResult.get("pods").toString())
+                .contains("customer-5dd65b5bf-58btl")
+                .contains("gateway-9b894c5d-2fcpm");
+
+        String liveContext = tools.buildLiveOperationalContext("local", "how many pods are running", null);
+        assertThat(liveContext)
+                .contains("Live Kubernetes Pods")
+                .contains("customer-5dd65b5bf-58btl")
+                .contains("gateway-9b894c5d-2fcpm");
+    }
+
+    @Test
+    void copilotQueuesSingleAndMultiCommandProposalsIntoApprovals() {
+        IncidentRepository incidentRepo = mock(IncidentRepository.class);
+        var eventRepo = mock(com.example.Openstack_ai_agent.incident.IncidentEventRepository.class);
+        var evidenceRepo = mock(com.example.Openstack_ai_agent.evidence.EvidenceItemRepository.class);
+        var diagnosisRepo = mock(com.example.Openstack_ai_agent.diagnosis.DiagnosisRepository.class);
+        var snapshotRepo = mock(com.example.Openstack_ai_agent.diagnosis.HealthSnapshotRepository.class);
+        var actionRepo = mock(com.example.Openstack_ai_agent.remediation.ProposedActionRepository.class);
+        var publisher = mock(com.example.Openstack_ai_agent.observability.DashboardEventPublisher.class);
+        var txManager = mock(org.springframework.transaction.PlatformTransactionManager.class);
+
+        when(txManager.getTransaction(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new org.springframework.transaction.support.SimpleTransactionStatus());
+        when(incidentRepo.saveAndFlush(org.mockito.ArgumentMatchers.any())).thenAnswer(inv -> inv.getArgument(0));
+        when(evidenceRepo.saveAndFlush(org.mockito.ArgumentMatchers.any())).thenAnswer(inv -> inv.getArgument(0));
+        when(snapshotRepo.saveAndFlush(org.mockito.ArgumentMatchers.any())).thenAnswer(inv -> inv.getArgument(0));
+        when(diagnosisRepo.saveAndFlush(org.mockito.ArgumentMatchers.any())).thenAnswer(inv -> inv.getArgument(0));
+        when(actionRepo.saveAndFlush(org.mockito.ArgumentMatchers.any())).thenAnswer(inv -> inv.getArgument(0));
+
+        CopilotActionProposalService proposalService = new CopilotActionProposalService(
+                incidentRepo,
+                eventRepo,
+                evidenceRepo,
+                diagnosisRepo,
+                snapshotRepo,
+                actionRepo,
+                new com.example.Openstack_ai_agent.remediation.ActionCatalogValidator(),
+                publisher,
+                new ConversationSanitizer(),
+                new com.fasterxml.jackson.databind.ObjectMapper(),
+                txManager
+        );
+
+        String llmReplyWithTwoCommands = """
+                I have prepared the requested scaling and restart commands for your cluster.
+                <PROPOSED_ACTIONS_JSON>
+                [
+                  {
+                    "actionType": "SCALE_K8S_DEPLOYMENT",
+                    "service": "gateway",
+                    "reason": "Scale gateway to 2 replicas",
+                    "arguments": { "namespace": "pitstop", "deployment": "gateway", "replicas": 2 }
+                  },
+                  {
+                    "actionType": "RESTART_K8S_WORKLOAD",
+                    "service": "customer",
+                    "reason": "Restart customer deployment",
+                    "arguments": { "namespace": "pitstop", "workload": "customer", "kind": "Deployment" }
+                  }
+                ]
+                </PROPOSED_ACTIONS_JSON>
+                """;
+
+        var parsed = proposalService.extractAndQueueProposals(
+                UUID.randomUUID(),
+                "local",
+                "scale gateway to 2 replicas and restart customer",
+                llmReplyWithTwoCommands
+        );
+
+        assertThat(parsed.queuedActions()).hasSize(2);
+        assertThat(parsed.queuedActions().get(0).commandPreview())
+                .isEqualTo("kubectl scale deployment/gateway --replicas=2 -n pitstop");
+        assertThat(parsed.queuedActions().get(1).commandPreview())
+                .isEqualTo("kubectl rollout restart deployment/customer -n pitstop");
+        assertThat(parsed.formattedReply())
+                .doesNotContain("<PROPOSED_ACTIONS_JSON>")
+                .contains("Queued for Operator Approval (`/approvals`)")
+                .contains("kubectl scale deployment/gateway --replicas=2 -n pitstop")
+                .contains("kubectl rollout restart deployment/customer -n pitstop");
+    }
 }

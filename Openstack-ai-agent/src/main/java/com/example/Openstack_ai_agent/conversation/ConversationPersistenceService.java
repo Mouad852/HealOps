@@ -177,6 +177,12 @@ public class ConversationPersistenceService {
 
         List<EvidenceItemEntity> evidence = evidenceItemRepository.findByIncidentIdOrderByObservedAtDesc(incidentId);
         UUID latestEvidenceId = evidence.isEmpty() ? null : evidence.getFirst().getId();
+        int logEvidenceCount = (int) evidence.stream()
+                .filter(e -> e.getType() == com.example.Openstack_ai_agent.evidence.EvidenceType.LOG)
+                .count();
+        int traceEvidenceCount = (int) evidence.stream()
+                .filter(e -> e.getType() == com.example.Openstack_ai_agent.evidence.EvidenceType.TRACE)
+                .count();
 
         List<ToolExecutionEntity> executions = toolExecutionRepository.findByIncidentIdOrderByStartedAtAsc(incidentId);
         UUID latestExecutionId = executions.isEmpty() ? null : executions.getLast().getId();
@@ -194,6 +200,8 @@ public class ConversationPersistenceService {
                 incident.getSeverity().name(),
                 incident.getTraceId(),
                 evidence.size(),
+                logEvidenceCount,
+                traceEvidenceCount,
                 latestEvidenceId,
                 executions.size(),
                 latestExecutionId,
@@ -227,11 +235,28 @@ public class ConversationPersistenceService {
             String severity,
             String traceId,
             int evidenceCount,
+            int logEvidenceCount,
+            int traceEvidenceCount,
             UUID latestEvidenceId,
             int executionCount,
             UUID latestExecutionId,
             String latestDiagnosisSummary
     ) {
+        public IncidentReferenceSummary(
+                UUID incidentId,
+                String service,
+                String status,
+                String severity,
+                String traceId,
+                int evidenceCount,
+                UUID latestEvidenceId,
+                int executionCount,
+                UUID latestExecutionId,
+                String latestDiagnosisSummary
+        ) {
+            this(incidentId, service, status, severity, traceId, evidenceCount, 0, 0,
+                    latestEvidenceId, executionCount, latestExecutionId, latestDiagnosisSummary);
+        }
     }
 
     public record GeneratedMessage(

@@ -27,12 +27,32 @@ public class ConversationAssistantService {
     private static final Logger log = LoggerFactory.getLogger(ConversationAssistantService.class);
     private static final String SYSTEM_PROMPT = """
             You are HealOps Incident Autopilot's operations assistant.
-            Respond concisely using only the provided bounded, redacted conversation context,
-            read-only operational tool results, and incident/evidence/execution references.
+            Respond clearly and concisely in human-readable Markdown using the provided LIVE OPERATIONAL TELEMETRY & INFRASTRUCTURE SNAPSHOT,
+            bounded conversation context, and incident/evidence/execution references.
+            The live snapshot automatically provides:
+            - Live Kubernetes Pods & Prometheus Resource Metrics (from k8s-mcp + Prometheus) with pod name, namespace, phase, readiness (e.g. 1/1), restarts, live cpu_percent, memory_mb, memory_percent, node, and containers.
+            - Live Prometheus Telemetry & Anomaly Detection Summary (active Prometheus scrape targets cadvisor/otel-collector, host total CPU% and working-set memory MB, and HealOps anomaly detection thresholds).
+            - Live Docker Containers & Prometheus Metrics (from docker-mcp + Prometheus) with live cpu_percent and memory_mb per container.
+            - Environment Health Overview, Active Incidents, and Recent Incidents (with latest diagnosis, proposed remediation action, and evidence UUIDs).
+            - Bounded Loki Service Logs and Jaeger v3 Distributed Traces when an incident or service is inspected.
             Strict rules:
-            1. Never repeat secrets, credentials, or raw unbounded logs.
-            2. Never emit executable shell commands or claim to bypass operator approval/policy.
-            3. Reference evidence items and tool executions by their UUIDs.
+            1. When asked about running pods, containers, services, or incidents, present the live data from the snapshot in a clear, human-readable Markdown list or table.
+            2. Never repeat secrets, credentials, or raw unbounded logs.
+            3. Never claim to bypass operator approval/policy.
+            4. Whenever the user asks you to perform one or more operations (e.g. scale a deployment, restart a pod/workload/container/service, or rollback a deployment — whether a single command or multiple commands in one request):
+               a) Present the clear set of commands that will be queued to meet their requirements.
+               b) At the very end of your response, output a <PROPOSED_ACTIONS_JSON>[...]</PROPOSED_ACTIONS_JSON> block containing a JSON array of the allowlisted actions to queue into /approvals.
+               Each object in the JSON array MUST have:
+               - "actionType": one of "SCALE_K8S_DEPLOYMENT", "RESTART_K8S_WORKLOAD", "ROLLBACK_K8S_DEPLOYMENT", "RESTART_CONTAINER", "RESTART_OPENSTACK_SERVICE"
+               - "service": target service name (e.g. "gateway", "customer", "rabbitmq", "mysql-customer", "demo-workload")
+               - "reason": brief explanation of why this command is queued
+               - "arguments": typed arguments matching actionType:
+                 * SCALE_K8S_DEPLOYMENT -> {"namespace": "<ns, default pitstop>", "deployment": "<name>", "replicas": <int 1..10>}
+                 * RESTART_K8S_WORKLOAD -> {"namespace": "<ns, default pitstop>", "workload": "<name>", "kind": "Deployment" or "StatefulSet" or "DaemonSet"}
+                 * ROLLBACK_K8S_DEPLOYMENT -> {"namespace": "<ns, default pitstop>", "deployment": "<name>", "revision": <optional int>}
+                 * RESTART_CONTAINER -> {"container": "<container_name>"}
+                 * RESTART_OPENSTACK_SERVICE -> {"node": "<node>", "service": "<service>"}
+               Do NOT include <PROPOSED_ACTIONS_JSON> when the user is only asking a read-only question (like "how many pods are running").
             """;
 
     private final ChatClient chatClient;
@@ -41,6 +61,7 @@ public class ConversationAssistantService {
     private final CopilotToolQueryService copilotToolQueryService;
     private final boolean llmEnabled;
     private final String apiKey;
+    private CopilotActionProposalService actionProposalService;
 
     @Autowired
     public ConversationAssistantService(
@@ -61,6 +82,11 @@ public class ConversationAssistantService {
                 .defaultSystem(SYSTEM_PROMPT)
                 .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
                 .build();
+    }
+
+    @Autowired(required = false)
+    public void setActionProposalService(CopilotActionProposalService actionProposalService) {
+        this.actionProposalService = actionProposalService;
     }
 
     public List<ConversationPersistenceService.GeneratedMessage> processTurn(
@@ -112,10 +138,14 @@ public class ConversationAssistantService {
         String assistantReply;
         if (llmEnabled && LlmDiagnosisService.isUsableApiKey(apiKey)) {
             try {
-                String boundedPrompt = buildBoundedPrompt(context, userText);
+                String liveOpsContext = copilotToolQueryService.buildLiveOperationalContext(
+                        context.session().environmentId(),
+                        userText,
+                        linkedIncidentId
+                );
+                String boundedPrompt = buildBoundedPrompt(context, userText, liveOpsContext);
                 String rawReply = chatClient.prompt()
                         .user(boundedPrompt)
-                        .tools(copilotToolQueryService.scopedTools(context.session().environmentId()))
                         .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, conversationId))
                         .call()
                         .content();
@@ -131,6 +161,38 @@ public class ConversationAssistantService {
             }
         } else {
             assistantReply = generateDeterministicReply(conversationId, context, userText);
+        }
+
+        if (actionProposalService != null) {
+            CopilotActionProposalService.ParsedCopilotReply parsed = actionProposalService.extractAndQueueProposals(
+                    sessionId,
+                    context.session().environmentId(),
+                    userText,
+                    assistantReply
+            );
+            assistantReply = sanitizer.sanitizeContent(parsed.formattedReply());
+            for (CopilotActionProposalService.QueuedActionRecord q : parsed.queuedActions()) {
+                if (linkedIncidentId == null) {
+                    linkedIncidentId = q.incidentId();
+                }
+                if (linkedEvidenceId == null) {
+                    linkedEvidenceId = q.evidenceId();
+                }
+                messages.add(new ConversationPersistenceService.GeneratedMessage(
+                        ConversationMessageRole.TOOL_REQUEST,
+                        "queue_approval_action(actionType=" + q.actionType() + ", service=" + q.service() + ", args=" + q.arguments() + ")",
+                        q.evidenceId(),
+                        null,
+                        q.incidentId()
+                ));
+                messages.add(new ConversationPersistenceService.GeneratedMessage(
+                        ConversationMessageRole.TOOL_RESPONSE,
+                        "Queued actionId=" + q.actionId() + " [command=\"" + q.commandPreview() + "\", status=PROPOSED, incidentId=" + q.incidentId() + "] in /approvals",
+                        q.evidenceId(),
+                        null,
+                        q.incidentId()
+                ));
+            }
         }
 
         messages.add(new ConversationPersistenceService.GeneratedMessage(
@@ -198,7 +260,12 @@ public class ConversationAssistantService {
                     .append(" (service=").append(ref.service())
                     .append(", status=").append(ref.status())
                     .append(", evidence=").append(ref.evidenceCount())
+                    .append(" [logs=").append(ref.logEvidenceCount())
+                    .append(", traces=").append(ref.traceEvidenceCount()).append("]")
                     .append(", executions=").append(ref.executionCount()).append(").");
+            if (ref.latestDiagnosisSummary() != null && !ref.latestDiagnosisSummary().isBlank()) {
+                reply.append(" Latest diagnosis: ").append(truncate(ref.latestDiagnosisSummary(), 240));
+            }
         }
 
         String safeReply = sanitizer.sanitizeContent(reply.toString());
@@ -208,7 +275,8 @@ public class ConversationAssistantService {
 
     private String buildBoundedPrompt(
             ConversationPersistenceService.ConversationTurnContext context,
-            String userText
+            String userText,
+            String liveOpsContext
     ) {
         StringBuilder sb = new StringBuilder();
         sb.append("Environment: ").append(context.session().environmentId()).append('\n');
@@ -223,6 +291,11 @@ public class ConversationAssistantService {
             if (ref.latestDiagnosisSummary() != null) {
                 sb.append("Latest Diagnosis Summary: ").append(ref.latestDiagnosisSummary()).append('\n');
             }
+        }
+        if (liveOpsContext != null && !liveOpsContext.isBlank()) {
+            sb.append("\n--- LIVE OPERATIONAL TELEMETRY & INFRASTRUCTURE SNAPSHOT ---\n")
+                    .append(liveOpsContext)
+                    .append("\n------------------------------------------------------------\n");
         }
         sb.append("User Message: ").append(userText);
         return sb.toString();
